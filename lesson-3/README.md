@@ -19,7 +19,7 @@ You can download and execute the script directly from your GitHub repository in 
 
 ### Option 1: Using `curl`
 ```bash
-curl -O [https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh](https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh)
+curl -O https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh
 chmod +x install_dev_tools.sh
 sudo ./install_dev_tools.sh
 
@@ -28,7 +28,7 @@ sudo ./install_dev_tools.sh
 ### Option 2: Using `wget`
 
 ```bash
-wget [https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh](https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh)
+wget https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh
 chmod +x install_dev_tools.sh
 sudo ./install_dev_tools.sh
 
