@@ -1,105 +1,120 @@
-# Development Environment Setup Script (`install_dev_tools.sh`)
+# Development Tools Automation Script
 
-This script automates the installation and verification of essential development tools on **Debian** and **Ubuntu** systems.
-
-## Features
-
-- **Docker Engine**: Automatically configures the official Docker repository based on your OS (`debian` or `ubuntu`) and installs the engine.
-- **Docker Compose**: Installs the Docker Compose v2 plugin.
-- **Python (>= 3.9)**: Verifies/installs Python 3 alongside `python3-full` and `python3-venv` for proper virtual environment management.
-- **Virtual Environment (`venv`)**: Automatically creates an isolated Python virtual environment (`.venv`) in the current directory or a specified path.
-- **Django**: Installs and upgrades Django via `pip` directly inside the virtual environment (complying with PEP 668).
-- **Idempotent**: Checks if tools are already installed to prevent duplicated installations.
+This repository contains an automated Bash script (`install_dev_tools.sh`) designed for **Debian** and **Ubuntu** systems. It checks for existing tools and installs the essential development stack without duplication.
 
 ---
 
-## Prerequisites
+## What the Script Installs
 
-- **OS**: Debian (11/12/13) or Ubuntu (20.04/22.04/24.04).
-- **Privileges**: Must be run with `root` privileges (or via `sudo`).
+1. **Docker Engine** (using the official Docker repository adapted for Debian/Ubuntu).
+2. **Docker Compose** (v2 plugin).
+3. **Python 3** (>= 3.9), `python3-full`, `python3-venv`, and `pip`.
+4. **Python Virtual Environment (`venv`)** created in the current working directory (defaults to `.venv`) with **Django** pre-installed inside it.
 
 ---
 
-## Usage
+## Download & Run from GitHub
 
-### 1. Make the Script Executable
+You can download and execute the script directly from your GitHub repository in one go. 
+
+### Option 1: Using `curl`
 ```bash
+curl -O [https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh](https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh)
 chmod +x install_dev_tools.sh
-```
-
-### 2. Run the Script
-
-**Default execution** (creates `.venv` in the current directory):
-```bash
 sudo ./install_dev_tools.sh
-# or if logged in as root:
-./install_dev_tools.sh
+
 ```
 
-**Custom virtual environment path**:
-```bash
-sudo ./install_dev_tools.sh --venv-path ./my_custom_env
-```
+### Option 2: Using `wget`
 
-**Display Help**:
 ```bash
-./install_dev_tools.sh --help
+wget [https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh](https://raw.githubusercontent.com/dvankevich/my-microservice-project/refs/heads/lesson-3/lesson-3/install_dev_tools.sh)
+chmod +x install_dev_tools.sh
+sudo ./install_dev_tools.sh
+
 ```
 
 ---
 
-## How to Create and Run a Django Project
+## Script Options
 
-Once the setup script finishes successfully, follow these steps to start a new Django project:
+You can view the help message at any time by passing the `--help` flag:
 
-### Step 1: Activate the Virtual Environment
+```bash
+sudo ./install_dev_tools.sh --help
+
+```
+
+* `-v, --venv-path PATH` — Specify a custom path for the virtual environment (default: `./.venv`).
+* `-h, --help` — Display the help message and exit.
+
+---
+
+## How to Set Up and Run a Django Project
+
+After running the script, a Python virtual environment will be created in your current directory (e.g., `.venv`). Follow these steps to initialize and run a Django project:
+
+### 1. Activate the Virtual Environment
+
 ```bash
 source .venv/bin/activate
+
 ```
+
 *(Your terminal prompt will now show `(.venv)`).*
 
-### Step 2: Create a New Django Project
-Run `django-admin` to bootstrap your project structure:
+### 2. Create a New Django Project
+
 ```bash
 django-admin startproject myproject
 cd myproject
+
 ```
 
-### Step 3: Run Database Migrations
-Initialize the default SQLite database:
+### 3. Configure `ALLOWED_HOSTS` (Optional for Remote Servers)
+
+If you are running this on a remote VPS and want to access it via your browser:
+
+1. Open the settings file:
+```bash
+nano myproject/settings.py
+
+```
+
+
+2. Locate and update `ALLOWED_HOSTS`:
+```python
+ALLOWED_HOSTS = ['*']
+
+```
+
+
+3. Save and exit (`Ctrl + O`, `Enter`, then `Ctrl + X`).
+
+### 4. Apply Database Migrations
+
 ```bash
 python manage.py migrate
+
 ```
 
-### Step 4: Configure `ALLOWED_HOSTS` (Required for Remote Servers)
-If you are running this on a remote server/VPS, allow access to your server's IP address:
-1. Open `myproject/settings.py` in your editor:
-   ```bash
-   nano myproject/settings.py
-   ```
-2. Modify `ALLOWED_HOSTS`:
-   ```python
-   ALLOWED_HOSTS = ['*']  # Or specify your server's IP address
-   ```
-3. Save and exit (`Ctrl + O`, `Enter`, `Ctrl + X`).
+### 5. Run the Development Server
 
-### Step 5: Start the Development Server
-
-- **For local development**:
-  ```bash
-  python manage.py runserver
-  ```
-- **For remote servers** (binds to all network interfaces on port 8000):
-  ```bash
-  python manage.py runserver 0.0.0.0:8000
-  ```
-
-Open your browser and navigate to `http://<your-server-ip>:8000` to view the Django welcome page.
-
----
-
-## Deactivating the Virtual Environment
-When you are done working:
+* **For local development:**
 ```bash
-deactivate
+python manage.py runserver
+
 ```
+
+
+* **For a remote server (accessible externally):**
+```bash
+python manage.py runserver 0.0.0.0:8000
+
+```
+
+
+
+Open your browser and navigate to `http://<your-server-ip>:8000` to see the Django welcome page!
+
+To stop the server, press `Ctrl + C`. To exit the virtual environment, type `deactivate`.
