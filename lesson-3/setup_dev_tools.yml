@@ -1,0 +1,123 @@
+---
+- name: Setup Development Environment (Docker, Python, venv, Django)
+  hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    target_user: "{{ ansible_env.SUDO_USER | default(ansible_user_id) }}"
+    venv_path: "/home/{{ target_user }}/.venv"
+  tasks:
+    - name: Determine Docker OS repository target
+      ansible.builtin.set_fact:
+        docker_os: >-
+          {%- if ansible_distribution | lower == 'debian' or 'debian' in ansible_distribution_release | lower -%}
+          debian
+          {%- elif ansible_distribution | lower == 'ubuntu' or 'ubuntu' in ansible_distribution_release | lower -%}
+          ubuntu
+          {%- else -%}
+          unsupported
+          {%- endif -%}
+
+    - name: Validate OS support
+      ansible.builtin.assert:
+        that:
+          - docker_os != "unsupported"
+        fail_msg: "Unsupported distribution: {{ ansible_distribution }}. This playbook supports Debian and Ubuntu."
+
+    - name: Remove incorrect Docker repository configuration if exists
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install prerequisite packages for Docker repository
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+
+    - name: Create directory for Docker GPG keyrings
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Docker official GPG key (.asc format)
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ docker_os }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0444'
+        force: yes
+
+    - name: Add Docker repository to APT sources
+      ansible.builtin.apt_repository:
+        repo: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else ansible_architecture }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ docker_os }} {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Install Docker and development tools
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+          - python3
+          - python3-full
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is started and enabled
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add current user to the docker group
+      ansible.builtin.user:
+        name: "{{ target_user }}"
+        groups: docker
+        append: yes
+      when: target_user != 'root'
+
+    - name: Remove old venv if it exists (to fix ownership)
+      ansible.builtin.file:
+        path: "{{ venv_path }}"
+        state: absent
+      become: no
+
+    - name: Create virtual environment as target user
+      ansible.builtin.command:
+        cmd: python3 -m venv {{ venv_path }}
+        creates: "{{ venv_path }}/bin/python"
+      become: no
+
+    - name: Ensure correct ownership of venv
+      ansible.builtin.file:
+        path: "{{ venv_path }}"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        recurse: yes
+
+    - name: Install Django inside virtual environment
+      ansible.builtin.pip:
+        name: django
+        executable: "{{ venv_path }}/bin/pip"
+      become: no
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg:
+          - "Setup completed successfully!"
+          - "Virtual environment created at: {{ venv_path }}"
+          - "To activate the virtual environment, run: source {{ venv_path }}/bin/activate"
+          - "To apply docker group changes without rebooting, run: newgrp docker"
