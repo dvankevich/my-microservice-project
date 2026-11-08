@@ -14,7 +14,7 @@ Options:
 
 Description:
   Automates the installation of essential development tools on Debian/Ubuntu:
-  - Docker (Engine)
+  - Docker (Engine) & adds current user to the 'docker' group
   - Docker Compose (v2 plugin)
   - Python (3.9 or newer) & python3-full
   - Virtual Environment (venv) with Django installed inside it
@@ -103,6 +103,20 @@ else
   echo "[+] Docker successfully installed."
 fi
 
+# 1.1 Configure Docker to run without sudo for the invoking user
+# Determine the real user if run via sudo, otherwise use current user
+TARGET_USER="${SUDO_USER:-$USER}"
+
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
+  echo "[+] Adding user '$TARGET_USER' to the 'docker' group..."
+  groupadd -f docker
+  usermod -aG docker "$TARGET_USER"
+  echo "[+] User '$TARGET_USER' added to 'docker' group successfully."
+  echo "[!] Note: You will need to log out and log back in (or run 'newgrp docker') for this change to take effect."
+else
+  echo "[!] Running directly as root. Skipping non-root docker group assignment."
+fi
+
 # 2. Check and install Docker Compose (Plugin check)
 if docker compose version &>/dev/null; then
   echo "[!] Docker Compose is already installed ($(docker compose version)). Skipping."
@@ -164,4 +178,3 @@ fi
 
 echo "[done] All development tools are installed and ready to use!"
 echo "[*] To activate the Python virtual environment, run: source $VENV_PATH/bin/activate"
-
