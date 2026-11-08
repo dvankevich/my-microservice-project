@@ -9,7 +9,8 @@ show_help() {
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  -h, --help    Display this help message and exit
+  -v, --venv-path PATH  Specify custom path for venv (default: .venv in current directory)
+  -h, --help            Display this help message and exit
 
 Description:
   Automates the installation of essential development tools on Debian/Ubuntu:
@@ -22,8 +23,14 @@ EOF
 }
 
 # Parse command line arguments
+VENV_PATH="./.venv"
+
 while [[ "$#" -gt 0 ]]; do
   case $1 in
+    -v|--venv-path)
+      VENV_PATH="$2"
+      shift 2
+      ;;
     -h|--help)
       show_help
       ;;
@@ -131,8 +138,7 @@ if [ "$PYTHON_READY" = false ]; then
   echo "[+] Python and required modules successfully installed."
 fi
 
-# 4. Create virtual environment (venv) and install Django inside it
-VENV_PATH="/opt/venv"
+# 4. Create virtual environment (venv) in current directory and install Django inside it
 echo "[+] Setting up Python virtual environment at $VENV_PATH..."
 
 if [ ! -d "$VENV_PATH" ]; then
