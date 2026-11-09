@@ -1,14 +1,20 @@
 # mysite
 
-Wagtail-проєкт.
+Wagtail project.
 
-## Локальна розробка
+## Local Development
 
-Детальна інструкція з запуску на локальній машині (PostgreSQL у Docker, віртуальне оточення, міграції):
+Detailed instructions for running the project locally (PostgreSQL in Docker, virtual environment, migrations):
 
 **[LOCAL-RUN.md](LOCAL-RUN.md)**
 
-## Швидкий старт (після налаштування)
+## Deployments
+
+Instructions for local development and Docker deployment:
+
+**[DEPLOYMENTS.md](DEPLOYMENTS.md)**
+
+## Quick start (after setup)
 
 ```bash
 source .venv/bin/activate

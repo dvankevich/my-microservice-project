@@ -1,2 +1,12 @@
 Django>=6.1,<6.2
 wagtail>=8.1,<8.2
+
+# Database
+psycopg2-binary>=2.9
+
+# Environment variables
+python-dotenv>=1.0
+
+# Optional but useful
+gunicorn>=23.0
+
