@@ -1,6 +1,6 @@
 # Deployments
 
-This document describes how to run the Wagtail project locally and in Docker.
+This document describes how to run the Wagtail project locally, with a single Docker container, and with Docker Compose.
 
 ## Local Development (without Docker)
 
@@ -23,7 +23,6 @@ docker run -d \
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install psycopg2-binary python-dotenv
 
 # Configure .env and settings (see LOCAL-RUN.md)
 # Add "django.contrib.postgres" to INSTALLED_APPS in base.py
@@ -35,10 +34,12 @@ python manage.py runserver
 
 ---
 
-## Docker Deployment
+## Single Docker Container
 
 One image is used for all environments (dev, staging, production).  
 Configuration is controlled via environment variables and `mysite.settings.docker`.
+
+Migrations run automatically on container start via `entrypoint.sh`.
 
 ### Build the image
 
@@ -65,50 +66,97 @@ docker run -d \
   mysite-wagtail
 ```
 
-### Fix media permissions
-
-The container runs as user `wagtail` (usually UID 1000).  
-After the first start, fix ownership of the media folder:
+### Create superuser (first time only)
 
 ```bash
-docker exec wagtail-app id          # check UID (usually 1000)
+docker exec -it wagtail-app python manage.py createsuperuser
+```
+
+### Fix media permissions
+
+```bash
+docker exec wagtail-app id
 sudo chown -R 1000:1000 media/
 sudo chmod -R 755 media/
 docker restart wagtail-app
+```
+
+---
+
+## Docker Compose
+
+All services (web, db, nginx) are defined in `docker-compose.yml`.
+
+Migrations run automatically on container start via `entrypoint.sh`.
+
+### Start the stack
+
+```bash
+# Create .env file if it does not exist
+echo 'SECRET_KEY=your-secret-key-here' > .env
+
+# Build and start
+docker compose up --build -d
+```
+
+### Create superuser (first time only)
+
+```bash
+docker compose exec web python manage.py createsuperuser
+```
+
+### Fix media permissions (if needed)
+
+```bash
+docker compose exec -u root web chown -R wagtail:wagtail /app/media
+docker compose restart web
 ```
 
 ### Useful commands
 
 ```bash
 # View logs
-docker logs -f wagtail-app
+docker compose logs -f web
 
-# Stop / start
-docker stop wagtail-app
-docker start wagtail-app
+# Stop
+docker compose down
 
-# Remove container
-docker rm -f wagtail-app
+# Stop and remove volumes
+docker compose down -v
+
+# Rebuild after code changes
+docker compose up --build -d
 ```
 
-### Environment variables
+### Services
 
-| Variable              | Description                          | Example                  |
-|-----------------------|--------------------------------------|--------------------------|
-| `SECRET_KEY`          | Django secret key                    | `your-secret-key`        |
-| `DEBUG`               | Debug mode                           | `True` / `False`         |
-| `ALLOWED_HOSTS`       | Comma-separated hosts                | `*` or `example.com`     |
-| `POSTGRES_DB`         | Database name                        | `wagtail`                |
-| `POSTGRES_USER`       | Database user                        | `wagtail`                |
-| `POSTGRES_PASSWORD`   | Database password                    | `wagtail`                |
-| `POSTGRES_HOST`       | Database host                        | `host.docker.internal`   |
-| `POSTGRES_PORT`       | Database port                        | `5432`                   |
-| `EMAIL_BACKEND`       | Email backend                        | `django.core.mail...`    |
-| `WAGTAILADMIN_BASE_URL` | Base URL for admin emails          | `http://localhost:8000`  |
+| Service | Description        | Port |
+|---------|--------------------|------|
+| web     | Wagtail / Gunicorn | 8000 |
+| db      | PostgreSQL         | 5432 |
+| nginx   | Reverse proxy      | 80   |
+
+Site is available at http://localhost (via Nginx).
+
+---
+
+## Environment variables
+
+| Variable            | Description           | Example                        |
+|---------------------|-----------------------|--------------------------------|
+| `SECRET_KEY`        | Django secret key     | `your-secret-key`              |
+| `DEBUG`             | Debug mode            | `True` / `False`               |
+| `ALLOWED_HOSTS`     | Comma-separated hosts | `*` or `example.com`           |
+| `POSTGRES_DB`       | Database name         | `wagtail`                      |
+| `POSTGRES_USER`     | Database user         | `wagtail`                      |
+| `POSTGRES_PASSWORD` | Database password     | `wagtail`                      |
+| `POSTGRES_HOST`     | Database host         | `db` or `host.docker.internal` |
+| `POSTGRES_PORT`     | Database port         | `5432`                         |
 
 ### Notes
 
 - The same image is used for dev, staging, and production.
 - Only environment variables differ between environments.
-- Media files are stored in the mounted `./media` directory on the host.
-- Migrations run automatically on container start (not ideal for production; consider a separate release step later).
+- Media files are stored in a named volume (`media_data`) when using Docker Compose, or in a bind mount when using a single container.
+- Migrations run automatically on container start via `entrypoint.sh`.
+- Superuser must be created manually once.

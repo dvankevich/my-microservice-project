@@ -60,11 +60,18 @@ COPY --from=builder /opt/venv /opt/venv
 # Use /app folder as a directory where the source code is stored.
 WORKDIR /app
 
+# Create media directory and set correct ownership
+RUN mkdir -p /app/media && chown wagtail:wagtail /app/media
+
 # Set this directory to be owned by the "wagtail" user.
 RUN chown wagtail:wagtail /app
 
 # Copy the source code of the project into the container.
 COPY --chown=wagtail:wagtail . .
+
+# Copy and prepare entrypoint
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh && chown wagtail:wagtail /app/entrypoint.sh
 
 # Use user "wagtail" to run the build commands below and the server itself.
 USER wagtail
@@ -72,10 +79,4 @@ USER wagtail
 # Collect static files.
 RUN python manage.py collectstatic --noinput --clear
 
-# Runtime command that executes when "docker run" is called.
-# WARNING:
-#   Migrating database at the same time as starting the server IS NOT THE BEST
-#   PRACTICE. The database should be migrated manually or using the release
-#   phase facilities of your hosting platform. This is used only so the
-#   Wagtail instance can be started with a simple "docker run" command.
-CMD set -xe; python manage.py migrate --noinput; gunicorn mysite.wsgi:application
+CMD ["/app/entrypoint.sh"]
