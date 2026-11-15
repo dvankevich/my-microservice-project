@@ -14,3 +14,8 @@ module "vpc" {
   availability_zones  = ["eu-central-1a", "eu-central-1b", "eu-central-1c"]   # Зони доступності
   vpc_name            = "vpc"              # Ім'я VPC
 }
+
+# Підключаємо модуль ECR
+module "ecr" {
+  source      = "./modules/ecr"
+}
