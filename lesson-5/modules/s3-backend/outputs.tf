@@ -4,7 +4,7 @@ output "s3_bucket_name" {
 }
 
 
-output "dynamodb_table_name" {
-  description = "Назва таблиці DynamoDB для блокування стейтів"
-  value       = aws_dynamodb_table.terraform_locks.name
-}
+# output "dynamodb_table_name" {
+#   description = "Назва таблиці DynamoDB для блокування стейтів"
+#   value       = aws_dynamodb_table.terraform_locks.name
+# }
