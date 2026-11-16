@@ -30,3 +30,14 @@ Detailed guides for the Wagtail project (Django + PostgreSQL + Docker):
 
 * **[Lesson 4 Project Guide (`lesson-4/README.md`)](./lesson-4/README.md)**  
   Overview of the Wagtail project, local development setup, and Docker deployment instructions.
+
+
+## 📚 Lesson 5 Documentation & Guides
+
+
+Detailed guides for provisioning AWS infrastructure with Terraform (`S3 Backend`, `VPC`, and `ECR`):
+
+
+- **[Lesson 5 Terraform Infrastructure Guide (`lesson-5/README.md`)](./lesson-5/README.md)**  
+  Project structure overview, Terraform initialization/execution commands, and module documentation for `s3-backend`, `vpc`, and `ecr`.
+  
