@@ -8,11 +8,11 @@ This directory contains Terraform configurations to provision foundational AWS i
 lesson-5/
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
 ├── main.tf                    # Root module wiring s3_backend, vpc, and ecr modules
-├── outputs.tf                 # Root outputs (s3_bucket_name, repository_url)
+├── outputs.tf                 # Root outputs (s3_bucket_name, nat_gateway_id, repository_url)
 ├── .terraform.lock.hcl        # Provider dependency lock file (hashicorp/aws v6.73.0)
 └── modules/
     ├── ecr/
-    │   ├── ecr.tf             # Private ECR repository resource
+    │   ├── ecr.tf             # Private ECR repository and repository access policy
     │   ├── outputs.tf         # Outputs repository_url
     │   └── variables.tf       # ECR repository name variable
     ├── s3-backend/
@@ -49,6 +49,7 @@ Provisions core networking in `eu-central-1` (`10.0.0.0/16` by default in `main.
 Provisions a private Amazon ECR repository intended for container images shared across compute workloads such as ECS and EKS:
 
 * **Repository (`ecr.tf`)**: Creates an `aws_ecr_repository` (default name `lesson-5-ecr`) with `MUTABLE` image tags, `force_delete = true` (allowing deletion even when images are present), and `scan_on_push = true` enabled for vulnerability scanning.
+* **Repository Policy (`ecr.tf`)**: Attaches an `aws_ecr_repository_policy` scoped to the current AWS account (`data.aws_caller_identity.current`) to allow image push and pull operations for account principals and workloads.
 
 ## Usage
 
