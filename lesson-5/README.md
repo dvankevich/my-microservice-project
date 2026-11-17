@@ -8,11 +8,11 @@ This directory contains Terraform configurations to provision foundational AWS i
 lesson-5/
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
 ├── main.tf                    # Root module wiring s3_backend, vpc, and ecr modules
-├── outputs.tf                 # Root outputs (s3_bucket_name, repository_url)
+├── outputs.tf                 # Root outputs (s3_bucket_name, nat_gateway_id, repository_url)
 ├── .terraform.lock.hcl        # Provider dependency lock file (hashicorp/aws v6.73.0)
 └── modules/
     ├── ecr/
-    │   ├── ecr.tf             # Private ECR repository resource
+    │   ├── ecr.tf             # Private ECR repository and repository access policy
     │   ├── outputs.tf         # Outputs repository_url
     │   └── variables.tf       # ECR repository name variable
     ├── s3-backend/
@@ -21,10 +21,10 @@ lesson-5/
     │   ├── s3.tf              # S3 state bucket, versioning, and ownership controls
     │   └── variables.tf       # Bucket and DynamoDB table name variables
     └── vpc/
-        ├── outputs.tf         # Outputs VPC ID, public/private subnet IDs, and IGW ID
-        ├── routes.tf          # Public route table, default internet route, and associations
+        ├── outputs.tf         # Outputs VPC ID, public/private subnet IDs, IGW ID, and NAT GW ID
+        ├── routes.tf          # Public and private route tables, routes, and subnet associations
         ├── variables.tf       # CIDR blocks, AZs, and VPC name variables
-        └── vpc.tf             # VPC, public/private subnets, and Internet Gateway
+        └── vpc.tf             # VPC, public/private subnets, IGW, EIP, and NAT Gateway
 
 ```
 
@@ -41,14 +41,15 @@ Provisions remote state storage resources in AWS:
 
 Provisions core networking in `eu-central-1` (`10.0.0.0/16` by default in `main.tf`) across three availability zones (`eu-central-1a`, `eu-central-1b`, `eu-central-1c`):
 
-* **VPC & Subnets (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), and an Internet Gateway (`igw`).
-* **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway and associates it with all public subnets.
+* **VPC, Subnets & NAT Gateway (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), an Internet Gateway (`igw`), and a single shared NAT Gateway (`nat`) with an Elastic IP (`aws_eip.nat`) placed in the first public subnet (`public[0]`) to keep test environment costs down.
+* **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway associated with all public subnets, and a shared private route table with a `0.0.0.0/0` route pointing to the NAT Gateway associated with all private subnets.
 
 ### `ecr` (`./modules/ecr`)
 
 Provisions a private Amazon ECR repository intended for container images shared across compute workloads such as ECS and EKS:
 
 * **Repository (`ecr.tf`)**: Creates an `aws_ecr_repository` (default name `lesson-5-ecr`) with `MUTABLE` image tags, `force_delete = true` (allowing deletion even when images are present), and `scan_on_push = true` enabled for vulnerability scanning.
+* **Repository Policy (`ecr.tf`)**: Attaches an `aws_ecr_repository_policy` scoped to the current AWS account (`data.aws_caller_identity.current`) to allow image push and pull operations for account principals and workloads.
 
 ## Usage
 
