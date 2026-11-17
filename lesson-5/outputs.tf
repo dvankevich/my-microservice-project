@@ -8,6 +8,11 @@ output "s3_bucket_name" {
 #   value       = module.s3_backend.dynamodb_table_name
 # }
 
+output "nat_gateway_id" {
+  description = "ID спільного NAT Gateway у VPC"
+  value       = module.vpc.nat_gateway_id
+}
+
 output "repository_url" {
   description = "URL створеного репозиторію Amazon ECR"
   value       = module.ecr.repository_url

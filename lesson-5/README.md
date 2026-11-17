@@ -21,10 +21,10 @@ lesson-5/
     │   ├── s3.tf              # S3 state bucket, versioning, and ownership controls
     │   └── variables.tf       # Bucket and DynamoDB table name variables
     └── vpc/
-        ├── outputs.tf         # Outputs VPC ID, public/private subnet IDs, and IGW ID
-        ├── routes.tf          # Public route table, default internet route, and associations
+        ├── outputs.tf         # Outputs VPC ID, public/private subnet IDs, IGW ID, and NAT GW ID
+        ├── routes.tf          # Public and private route tables, routes, and subnet associations
         ├── variables.tf       # CIDR blocks, AZs, and VPC name variables
-        └── vpc.tf             # VPC, public/private subnets, and Internet Gateway
+        └── vpc.tf             # VPC, public/private subnets, IGW, EIP, and NAT Gateway
 
 ```
 
@@ -41,8 +41,8 @@ Provisions remote state storage resources in AWS:
 
 Provisions core networking in `eu-central-1` (`10.0.0.0/16` by default in `main.tf`) across three availability zones (`eu-central-1a`, `eu-central-1b`, `eu-central-1c`):
 
-* **VPC & Subnets (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), and an Internet Gateway (`igw`).
-* **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway and associates it with all public subnets.
+* **VPC, Subnets & NAT Gateway (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), an Internet Gateway (`igw`), and a single shared NAT Gateway (`nat`) with an Elastic IP (`aws_eip.nat`) placed in the first public subnet (`public[0]`) to keep test environment costs down.
+* **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway associated with all public subnets, and a shared private route table with a `0.0.0.0/0` route pointing to the NAT Gateway associated with all private subnets.
 
 ### `ecr` (`./modules/ecr`)
 
