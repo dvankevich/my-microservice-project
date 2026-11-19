@@ -2,12 +2,20 @@ data "aws_caller_identity" "current" {}
 
 resource "aws_ecr_repository" "web" {
   name                 = var.repository_name
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
+  image_tag_mutability = var.image_tag_mutability
+  force_delete         = var.force_delete
 
   image_scanning_configuration {
-    scan_on_push = true
+    scan_on_push = var.scan_on_push
   }
+
+  tags = merge(
+    {
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+    },
+    var.tags
+  )
 }
 
 resource "aws_ecr_repository_policy" "web" {
