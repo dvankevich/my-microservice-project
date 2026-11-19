@@ -29,6 +29,7 @@ lesson-5/
         ├── routes.tf
         ├── variables.tf
         └── vpc.tf
+
 ```
 
 ## Modules Overview
@@ -39,7 +40,6 @@ Provisions remote state storage in AWS using the native S3 backend locking:
 
 * **S3 Bucket (`s3.tf`)**: Creates the state bucket (`tfstate-bucket-lesson5`), enables **Versioning** to preserve state history, and enforces `BucketOwnerEnforced` object ownership.
 * **State Locking**: Locking is handled natively by the S3 backend via `use_lockfile = true` in `backend.tf`. No separate DynamoDB table is required or provisioned.
-```
 
 ### `vpc` (`./modules/vpc`)
 
@@ -64,10 +64,11 @@ Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the publi
 
 ## Usage
 
-Run commands from the `lesson-5` directory with valid AWS credentials configured for `eu-central-1`:
+Run commands from the `lesson-7` directory with valid AWS credentials configured for `eu-central-1`:
 
 ```bash
-cd lesson-5
+cd lesson-7
+
 ```
 
 ### Initialize
@@ -76,6 +77,7 @@ Download providers, initialize modules, and configure the remote state backend:
 
 ```bash
 terraform init
+
 ```
 
 ### Plan
@@ -84,6 +86,7 @@ Preview the execution plan and verify which resources will be created, changed, 
 
 ```bash
 terraform plan
+
 ```
 
 ### Apply
@@ -92,12 +95,68 @@ Provision or update the infrastructure in AWS:
 
 ```bash
 terraform apply
+
 ```
 
-### Destroy
+## Build and Push Django Docker Image to ECR
+
+After provisioning the infrastructure, build the Django application image and push it to the newly created ECR repository.
+
+### 1. Export ECR Repository Variables
+
+Retrieve the repository URI from Terraform outputs (using `-raw` to omit quotes) and extract the registry URL and repository name:
+
+```bash
+export AWS_REGION="eu-central-1"
+export ECR_REPO_URL=$(terraform output -raw repository_url)
+export ECR_REGISTRY="${ECR_REPO_URL%/*}"
+export ECR_REPO_NAME="${ECR_REPO_URL#*/}"
+
+```
+
+### 2. Authenticate Docker with Amazon ECR
+
+Log in to your private ECR registry:
+
+```bash
+aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+```
+
+### 3. Build the Docker Image
+
+Navigate to the Django project directory (`lesson-4/mysite`) and build the image targeting `linux/amd64` (compatible with EKS worker nodes):
+
+```bash
+cd ../lesson-4/mysite
+docker build --platform linux/amd64 -t "$ECR_REPO_URL:latest" .
+
+```
+
+### 4. Push the Image to ECR
+
+Upload the tagged image to the repository:
+
+```bash
+docker push "$ECR_REPO_URL:latest"
+
+```
+
+### 5. Verify the Uploaded Image
+
+Confirm that the `latest` tag is available in Amazon ECR:
+
+```bash
+aws ecr list-images --repository-name "$ECR_REPO_NAME" --region "$AWS_REGION"
+
+```
+
+## Cleanup
 
 Tear down all Terraform-managed resources in this configuration:
 
 ```bash
+cd ../../lesson-7
 terraform destroy
+
 ```
