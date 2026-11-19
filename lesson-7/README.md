@@ -60,7 +60,11 @@ Provisions a private Amazon ECR repository intended for container images shared 
 Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the public subnets created by the `vpc` module. The cluster is intended as a lightweight development/test environment for containerized workloads that pull images from the ECR repository.
 
 * **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
-* **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) that runs on the public subnets. The node group uses a Free Tier–eligible instance type (recommended: `t3.micro`), with a small scaling configuration (`desired_size = 1`, `min_size = 1`, `max_size = 2`) to keep costs low. The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
+* **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 1`, `min_size = 1`, `max_size = 2`).
+* **Why `t3.small` instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Because system add-ons (`coredns`) already occupy 2 pod slots, a single `t3.micro` node triggers `0/1 nodes are available: 1 Too many pods` scheduling errors and leaves insufficient RAM (1 GiB total) to run both the Django application and PostgreSQL alongside HPA scaling. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**, allowing all system and application workloads to run on a single cost-effective node.
+* **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
+
+
 
 ## Usage
 

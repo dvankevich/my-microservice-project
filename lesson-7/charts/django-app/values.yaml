@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: 250284066941.dkr.ecr.eu-central-1.amazonaws.com/lesson-5-ecr
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8000
+
+# Оптимізовано під інстанс t3.micro (1 GB RAM)
+resources:
+  requests:
+    cpu: 100m
+    memory: 200Mi
+  limits:
+    cpu: 400m
+    memory: 400Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 80
+
+postgres:
+  enabled: true
+  image: "postgres:16-alpine"
+  port: 5432
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# Змінні середовища, перенесені з lesson-4/mysite/.env та docker-compose.yml
+env:
+  DJANGO_SETTINGS_MODULE: "mysite.settings.docker"
+  PORT: "8000"
+  SECRET_KEY: "django-insecure-ubwug8fvrjgh8(ljrj747v^_a_s(4dn*(!k1ep%4&+-s2=i-99"
+  DEBUG: "True"
+  ALLOWED_HOSTS: "*"
+  POSTGRES_DB: "wagtail"
+  POSTGRES_USER: "wagtail"
+  POSTGRES_PASSWORD: "wagtail"
+  POSTGRES_HOST: "{{ .Release.Name }}-postgres"
+  POSTGRES_PORT: "5432"
