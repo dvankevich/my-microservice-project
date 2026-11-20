@@ -56,6 +56,7 @@ env:
   PORT: "8000"
   DEBUG: "True"
   ALLOWED_HOSTS: "*"
+  CSRF_TRUSTED_ORIGINS: "https://django-app.dvankevich.pp.ua"
   POSTGRES_DB: "wagtail"
   POSTGRES_USER: "wagtail"
   POSTGRES_HOST: "{{ .Release.Name }}-postgres"
@@ -65,4 +66,3 @@ env:
 secrets:
   SECRET_KEY: ""
   POSTGRES_PASSWORD: ""
-  
