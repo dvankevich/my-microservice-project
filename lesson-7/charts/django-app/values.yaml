@@ -29,6 +29,10 @@ postgres:
   enabled: true
   image: "postgres:16-alpine"
   port: 5432
+  persistence:
+    enabled: true
+    storageClassName: "ebs-gp3"
+    size: "5Gi"
   resources:
     requests:
       cpu: 50m

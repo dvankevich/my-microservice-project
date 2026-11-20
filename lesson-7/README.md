@@ -1,6 +1,6 @@
 # Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application and PostgreSQL database.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application and PostgreSQL database backed by persistent AWS EBS storage.
 
 ## Project Structure
 
@@ -17,6 +17,7 @@ lesson-7/
 │   │   ├── outputs.tf
 │   │   └── variables.tf
 │   ├── eks/
+│   │   ├── ebs-csi.tf         # OIDC provider, IAM role, and AWS EBS CSI driver add-on
 │   │   ├── eks.tf             # EKS cluster, cluster IAM role, and access configuration
 │   │   ├── node.tf            # Managed node group and node IAM role
 │   │   ├── outputs.tf
@@ -33,13 +34,15 @@ lesson-7/
 └── charts/
     └── django-app/
         ├── Chart.yaml
-        ├── values.yaml            # Public application configuration (ConfigMap values, resources, HPA)
+        ├── values.yaml            # Public application configuration (ConfigMap values, persistence, resources, HPA)
         ├── secrets.yaml.example   # Template for sensitive credentials (committed to Git)
         └── templates/
             ├── configmap.yaml     # Non-sensitive environment variables
             ├── secret.yaml        # Kubernetes Secret for SECRET_KEY and POSTGRES_PASSWORD
             ├── deployment.yaml    # Django/Wagtail Deployment with PostgreSQL readiness initContainer
-            ├── postgres.yaml      # PostgreSQL 16 Deployment and ClusterIP Service
+            ├── postgres.yaml      # PostgreSQL 16 Deployment (Recreate strategy) and ClusterIP Service
+            ├── pvc.yaml           # PersistentVolumeClaim (5Gi) for PostgreSQL data
+            ├── storageclass.yaml  # Encrypted gp3 StorageClass (ebs.csi.aws.com, WaitForFirstConsumer)
             ├── service.yaml       # AWS LoadBalancer Service exposing port 80 -> 8000
             └── hpa.yaml           # HorizontalPodAutoscaler based on CPU utilization
 
@@ -75,6 +78,7 @@ Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the publi
 * **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
 * **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 1`, `min_size = 1`, `max_size = 2`).
 * **Why `t3.small` instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Because system add-ons (`coredns`) already occupy 2 pod slots, a single `t3.micro` node triggers `0/1 nodes are available: 1 Too many pods` scheduling errors and leaves insufficient RAM (1 GiB total) to run both the Django application and PostgreSQL alongside HPA scaling. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**, allowing all system and application workloads to run on a single cost-effective node.
+* **EBS CSI Driver & IRSA (`ebs-csi.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to the `kube-system:ebs-csi-controller-sa` service account, and installs the `aws-ebs-csi-driver` EKS add-on so Kubernetes can dynamically provision and attach AWS EBS volumes for stateful workloads.
 * **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
 
 ## Usage
@@ -169,7 +173,7 @@ cd ../../lesson-7
 
 ## Deploy Django Application to EKS with Helm
 
-The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`).
+The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`), and provisions an encrypted `gp3` AWS EBS volume via `PersistentVolumeClaim` (`subPath: pgdata`, `Recreate` deployment strategy) for persistent PostgreSQL storage.
 
 ### 1. Configure `kubectl` for EKS
 
@@ -208,10 +212,10 @@ helm upgrade --install django-app ./charts/django-app \
 
 ### 4. Verify the Deployment
 
-Check that both `postgres` and `django` pods are `Running`, the `Secret` is created, and retrieve the AWS LoadBalancer DNS name (`EXTERNAL-IP`):
+Check that the `PersistentVolumeClaim` is `Bound`, both `postgres` and `django` pods are `Running`, the `Secret` is created, and retrieve the AWS LoadBalancer DNS name (`EXTERNAL-IP`):
 
 ```bash
-kubectl get pods,svc,hpa,secret -n wagtail
+kubectl get pvc,pv,pods,svc,hpa,secret -n wagtail
 
 ```
 
@@ -239,14 +243,15 @@ kubectl exec deployment/django-app-django -n wagtail -- \
 
 Afterward, sign in to the Wagtail admin interface at `http://<EXTERNAL-IP>/admin/`.
 
-> **Note:** Because `postgres.yaml` uses ephemeral `emptyDir` storage for lightweight testing, recreating or rescheduling the PostgreSQL pod will reset the database and require re-running this command.
+> **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
 
 ## Cleanup
 
-First uninstall the Helm release so Kubernetes deletes the AWS Classic Load Balancer and releases its network interfaces, then tear down all Terraform-managed resources:
+First uninstall the Helm release so Kubernetes deletes the AWS Classic Load Balancer, then remove the `PersistentVolumeClaim` so AWS deletes the underlying EBS volume, and finally tear down all Terraform-managed resources:
 
 ```bash
 helm uninstall django-app -n wagtail
+kubectl delete pvc django-app-postgres-pvc -n wagtail
 terraform destroy
 
 ```
