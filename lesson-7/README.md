@@ -1,12 +1,14 @@
 # Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, and HTTPS access via `ingress-nginx` and `cert-manager`.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, HTTPS access via `ingress-nginx` and `cert-manager`, and horizontal pod autoscaling via HPA.
 
 ## Project Structure
 
 ```text
 lesson-7/
 ├── .gitignore                 # Ignores Terraform state/cache and local Helm secrets.yaml
+├── README.md                  # Infrastructure and deployment documentation
+├── LOAD_TESTING.md            # Load testing guide and HPA scaling verification scenarios
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
 ├── main.tf                    # Root module wiring s3_backend, vpc, ecr, and eks modules
 ├── outputs.tf                 # Root outputs
@@ -45,7 +47,7 @@ lesson-7/
             ├── storageclass.yaml  # Encrypted gp3 StorageClass (ebs.csi.aws.com, WaitForFirstConsumer)
             ├── service.yaml       # ClusterIP Service exposing port 80 -> 8000 to Ingress
             ├── ingress.yaml       # NGINX Ingress resource with cert-manager TLS annotations
-            └── hpa.yaml           # HorizontalPodAutoscaler based on CPU utilization
+            └── hpa.yaml           # HorizontalPodAutoscaler (2–6 replicas at >70% CPU utilization)
 ```
 
 ## Modules Overview
@@ -54,33 +56,33 @@ lesson-7/
 
 Provisions remote state storage in AWS using the native S3 backend locking:
 
-- **S3 Bucket (`s3.tf`)**: Creates the state bucket (`tfstate-bucket-lesson5`), enables **Versioning** to preserve state history, and enforces `BucketOwnerEnforced` object ownership.
-- **State Locking**: Locking is handled natively by the S3 backend via `use_lockfile = true` in `backend.tf`. No separate DynamoDB table is required or provisioned.
+* **S3 Bucket (`s3.tf`)**: Creates the state bucket (`tfstate-bucket-lesson5`), enables **Versioning** to preserve state history, and enforces `BucketOwnerEnforced` object ownership.
+* **State Locking**: Locking is handled natively by the S3 backend via `use_lockfile = true` in `backend.tf`. No separate DynamoDB table is required or provisioned.
 
 ### `vpc` (`./modules/vpc`)
 
 Provisions core networking in `eu-central-1` (`10.0.0.0/16` by default in `main.tf`) across three availability zones (`eu-central-1a`, `eu-central-1b`, `eu-central-1c`):
 
-- **VPC, Subnets & NAT Gateway (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), an Internet Gateway (`igw`), and a single shared NAT Gateway (`nat`) with an Elastic IP (`aws_eip.nat`) placed in the first public subnet (`public[0]`) to keep test environment costs down.
-- **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway associated with all public subnets, and a shared private route table with a `0.0.0.0/0` route pointing to the NAT Gateway associated with all private subnets.
+* **VPC, Subnets & NAT Gateway (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), an Internet Gateway (`igw`), and a single shared NAT Gateway (`nat`) with an Elastic IP (`aws_eip.nat`) placed in the first public subnet (`public[0]`) to keep test environment costs down.
+* **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway associated with all public subnets, and a shared private route table with a `0.0.0.0/0` route pointing to the NAT Gateway associated with all private subnets.
 
 ### `ecr` (`./modules/ecr`)
 
 Provisions a private Amazon ECR repository intended for container images shared across compute workloads such as ECS and EKS:
 
-- **Repository (`ecr.tf`)**: Creates an `aws_ecr_repository` (default name `lesson-5-ecr`) with `MUTABLE` image tags, `force_delete = true` (allowing deletion even when images are present), and `scan_on_push = true` enabled for vulnerability scanning.
-- **Repository Policy (`ecr.tf`)**: Attaches an `aws_ecr_repository_policy` scoped to the current AWS account (`data.aws_caller_identity.current`) to allow image push and pull operations for account principals and workloads.
+* **Repository (`ecr.tf`)**: Creates an `aws_ecr_repository` (default name `lesson-5-ecr`) with `MUTABLE` image tags, `force_delete = true` (allowing deletion even when images are present), and `scan_on_push = true` enabled for vulnerability scanning.
+* **Repository Policy (`ecr.tf`)**: Attaches an `aws_ecr_repository_policy` scoped to the current AWS account (`data.aws_caller_identity.current`) to allow image push and pull operations for account principals and workloads.
 
 ### `eks` (`./modules/eks`)
 
 Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the public subnets created by the `vpc` module. The cluster is intended as a lightweight development/test environment for containerized workloads that pull images from the ECR repository.
 
-- **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
-- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 2`, `min_size = 2`, `max_size = 3`).
-  - **Why `t3.small` (2 nodes) instead of `t3.micro` (1 node):** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 2 `t3.small` nodes provides enough pod slots and memory for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, PostgreSQL, and horizontally scaled Django pods without `Too many pods` scheduling errors.
-  - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
-- **EBS CSI Driver & IRSA (`ebs-csi.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to the `kube-system:ebs-csi-controller-sa` service account, and installs the `aws-ebs-csi-driver` EKS add-on so Kubernetes can dynamically provision and attach AWS EBS volumes for stateful workloads.
-- **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
+* **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
+* **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 2`, `min_size = 2`, `max_size = 3`).
+  * **Why `t3.small` (2 nodes) instead of `t3.micro` (1 node):** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 2 `t3.small` nodes provides enough pod slots and memory for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, and horizontally scaled Django pods without `Too many pods` scheduling errors.
+  * **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
+* **EBS CSI Driver & IRSA (`ebs-csi.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to the `kube-system:ebs-csi-controller-sa` service account, and installs the `aws-ebs-csi-driver` EKS add-on so Kubernetes can dynamically provision and attach AWS EBS volumes for stateful workloads.
+* **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
 
 ## Usage
 
@@ -205,8 +207,8 @@ kubectl get svc -n ingress-nginx
 
 Configure DNS for your domain (`django-app.dvankevich.pp.ua`):
 
-- **Recommended (`CNAME` record):** Point `django-app` to the `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`).
-- **Alternative (`A` record):** Resolve the ELB's current IPv4 addresses with `dig +short <EXTERNAL-IP>` and add them as `A` records.
+* **Recommended (`CNAME` record):** Point `django-app` to the `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`).
+* **Alternative (`A` record):** Resolve the ELB's current IPv4 addresses with `dig +short <EXTERNAL-IP>` and add them as `A` records.
 
 Verify DNS propagation before issuing certificates:
 
@@ -306,6 +308,65 @@ Afterward, sign in to the Wagtail admin interface at `https://django-app.dvankev
 
 > **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
 
+## Horizontal Pod Autoscaler (HPA) Configuration
+
+Amazon EKS does not include `metrics-server` by default. Without it, `HorizontalPodAutoscaler` reports `cpu: <unknown>/70%` and cannot scale workloads.
+
+### 1. Install `metrics-server`
+
+Install `metrics-server` into the `kube-system` namespace:
+
+```bash
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm repo update
+
+helm upgrade --install metrics-server metrics-server/metrics-server \
+  -n kube-system \
+  --set 'args[0]=--kubelet-insecure-tls'
+```
+
+Verify that node and pod resource metrics are available (takes ~30–60 seconds):
+
+```bash
+kubectl top nodes
+kubectl top pods -n wagtail
+```
+
+### 2. Configure HPA Parameters in `values.yaml`
+
+The Helm chart (`templates/hpa.yaml` using `autoscaling/v2`) scales `django-app-django` based on CPU utilization relative to the pod's `100m` CPU request:
+
+```yaml
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 200Mi
+  limits:
+    cpu: 400m
+    memory: 400Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+```
+
+Apply the configuration and verify that HPA reads live CPU utilization (`cpu: 1%/70%`) and maintains between `2` and `6` replicas:
+
+```bash
+helm upgrade --install django-app ./charts/django-app \
+  -n wagtail \
+  -f ./charts/django-app/values.yaml \
+  -f ./charts/django-app/secrets.yaml
+
+kubectl get hpa,pods -n wagtail
+```
+
+> **Load Testing:** For instructions and examples on generating synthetic CPU/HTTP load to verify automatic scaling from `2` to `6` pods, see [`LOAD_TESTING.md`](./LOAD_TESTING.md).
+
 ## Cleanup
 
 Uninstall all Helm releases first so Kubernetes deletes the AWS Classic Load Balancer (`ingress-nginx`), delete the `PersistentVolumeClaim` so AWS deletes the underlying EBS volume, and finally tear down all Terraform-managed resources:
@@ -315,5 +376,6 @@ helm uninstall django-app -n wagtail
 kubectl delete pvc django-app-postgres-pvc -n wagtail
 helm uninstall cert-manager -n cert-manager
 helm uninstall ingress-nginx -n ingress-nginx
+helm uninstall metrics-server -n kube-system
 terraform destroy
 ```
