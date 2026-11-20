@@ -222,6 +222,25 @@ curl -I http://<EXTERNAL-IP>
 
 ```
 
+### 5. Create Django/Wagtail Superuser
+
+Once both `postgres` and `django` pods reach the `1/1 Running` state (ensuring database migrations in `entrypoint.sh` have completed), create an administrative user non-interactively via environment variables:
+
+```bash
+kubectl exec deployment/django-app-django -n wagtail -- \
+  env DJANGO_SUPERUSER_USERNAME=admin \
+      DJANGO_SUPERUSER_EMAIL=admin@example.com \
+      DJANGO_SUPERUSER_PASSWORD=your_password \
+  python manage.py createsuperuser --noinput
+
+```
+
+*(Alternatively, run `kubectl exec -it deployment/django-app-django -n wagtail -- python manage.py createsuperuser` for interactive prompts.)*
+
+Afterward, sign in to the Wagtail admin interface at `http://<EXTERNAL-IP>/admin/`.
+
+> **Note:** Because `postgres.yaml` uses ephemeral `emptyDir` storage for lightweight testing, recreating or rescheduling the PostgreSQL pod will reset the database and require re-running this command.
+
 ## Cleanup
 
 First uninstall the Helm release so Kubernetes deletes the AWS Classic Load Balancer and releases its network interfaces, then tear down all Terraform-managed resources:
