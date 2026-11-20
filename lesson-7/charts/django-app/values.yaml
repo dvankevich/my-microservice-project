@@ -1,0 +1,68 @@
+replicaCount: 2
+
+image:
+  repository: 250284066941.dkr.ecr.eu-central-1.amazonaws.com/lesson-5-ecr
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  host: "django-app.dvankevich.pp.ua"
+  tls:
+    enabled: true
+    secretName: "django-app-tls"
+    clusterIssuer: "letsencrypt-prod"
+
+# Оптимізовано під інстанс t3.small (2 GB RAM)
+resources:
+  requests:
+    cpu: 100m
+    memory: 200Mi
+  limits:
+    cpu: 400m
+    memory: 400Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+postgres:
+  enabled: true
+  image: "postgres:16-alpine"
+  port: 5432
+  persistence:
+    enabled: true
+    storageClassName: "ebs-gp3"
+    size: "5Gi"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# Змінні середовища, перенесені з lesson-4/mysite/.env та docker-compose.yml
+env:
+  DJANGO_SETTINGS_MODULE: "mysite.settings.docker"
+  PORT: "8000"
+  DEBUG: "True"
+  ALLOWED_HOSTS: "*"
+  CSRF_TRUSTED_ORIGINS: "https://django-app.dvankevich.pp.ua"
+  POSTGRES_DB: "wagtail"
+  POSTGRES_USER: "wagtail"
+  POSTGRES_HOST: "{{ .Release.Name }}-postgres"
+  POSTGRES_PORT: "5432"
+
+# Чутливі дані (підуть у Secret, реальні значення передаємо при деплої)
+secrets:
+  SECRET_KEY: ""
+  POSTGRES_PASSWORD: ""
