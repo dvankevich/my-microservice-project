@@ -1,34 +1,47 @@
-# Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS)
+# Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` for a microservice project: remote state storage, a multi-AZ Virtual Private Cloud (VPC), a private container image registry (ECR), and an Amazon EKS cluster.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application and PostgreSQL database.
 
 ## Project Structure
 
 ```text
-lesson-5/
+lesson-7/
+├── .gitignore                 # Ignores Terraform state/cache and local Helm secrets.yaml
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
 ├── main.tf                    # Root module wiring s3_backend, vpc, ecr, and eks modules
 ├── outputs.tf                 # Root outputs
 ├── .terraform.lock.hcl        # Provider dependency lock file
-└── modules/
-    ├── ecr/
-    │   ├── ecr.tf
-    │   ├── outputs.tf
-    │   └── variables.tf
-    ├── eks/
-    │   ├── eks.tf             # EKS cluster, cluster IAM role, and access configuration
-    │   ├── node.tf            # Managed node group and node IAM role
-    │   ├── outputs.tf
-    │   └── variables.tf
-    ├── s3-backend/
-    │   ├── outputs.tf         # Outputs S3 bucket name
-    │   ├── s3.tf              # S3 state bucket, versioning, and ownership controls
-    │   └── variables.tf       # Bucket name variable
-    └── vpc/
-        ├── outputs.tf
-        ├── routes.tf
-        ├── variables.tf
-        └── vpc.tf
+├── modules/
+│   ├── ecr/
+│   │   ├── ecr.tf
+│   │   ├── outputs.tf
+│   │   └── variables.tf
+│   ├── eks/
+│   │   ├── eks.tf             # EKS cluster, cluster IAM role, and access configuration
+│   │   ├── node.tf            # Managed node group and node IAM role
+│   │   ├── outputs.tf
+│   │   └── variables.tf
+│   ├── s3-backend/
+│   │   ├── outputs.tf         # Outputs S3 bucket name
+│   │   ├── s3.tf              # S3 state bucket, versioning, and ownership controls
+│   │   └── variables.tf       # Bucket name variable
+│   └── vpc/
+│       ├── outputs.tf
+│       ├── routes.tf
+│       ├── variables.tf
+│       └── vpc.tf
+└── charts/
+    └── django-app/
+        ├── Chart.yaml
+        ├── values.yaml            # Public application configuration (ConfigMap values, resources, HPA)
+        ├── secrets.yaml.example   # Template for sensitive credentials (committed to Git)
+        └── templates/
+            ├── configmap.yaml     # Non-sensitive environment variables
+            ├── secret.yaml        # Kubernetes Secret for SECRET_KEY and POSTGRES_PASSWORD
+            ├── deployment.yaml    # Django/Wagtail Deployment with PostgreSQL readiness initContainer
+            ├── postgres.yaml      # PostgreSQL 16 Deployment and ClusterIP Service
+            ├── service.yaml       # AWS LoadBalancer Service exposing port 80 -> 8000
+            └── hpa.yaml           # HorizontalPodAutoscaler based on CPU utilization
 
 ```
 
@@ -63,8 +76,6 @@ Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the publi
 * **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 1`, `min_size = 1`, `max_size = 2`).
 * **Why `t3.small` instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Because system add-ons (`coredns`) already occupy 2 pod slots, a single `t3.micro` node triggers `0/1 nodes are available: 1 Too many pods` scheduling errors and leaves insufficient RAM (1 GiB total) to run both the Django application and PostgreSQL alongside HPA scaling. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**, allowing all system and application workloads to run on a single cost-effective node.
 * **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
-
-
 
 ## Usage
 
@@ -148,19 +159,75 @@ docker push "$ECR_REPO_URL:latest"
 
 ### 5. Verify the Uploaded Image
 
-Confirm that the `latest` tag is available in Amazon ECR:
+Confirm that the `latest` tag is available in Amazon ECR and return to `lesson-7`:
 
 ```bash
 aws ecr list-images --repository-name "$ECR_REPO_NAME" --region "$AWS_REGION"
+cd ../../lesson-7
+
+```
+
+## Deploy Django Application to EKS with Helm
+
+The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`).
+
+### 1. Configure `kubectl` for EKS
+
+Update your local kubeconfig to connect to the `eks-cluster-demo` cluster:
+
+```bash
+aws eks update-kubeconfig --region "$AWS_REGION" --name eks-cluster-demo
+kubectl get nodes
+
+```
+
+### 2. Prepare Local Secrets File
+
+Copy the example secrets template and populate your actual `SECRET_KEY` and `POSTGRES_PASSWORD`. The `charts/**/secrets.yaml` file is excluded via `.gitignore` so credentials are never committed to version control:
+
+```bash
+cp charts/django-app/secrets.yaml.example charts/django-app/secrets.yaml
+# Edit charts/django-app/secrets.yaml with your actual credentials
+
+```
+
+### 3. Validate and Install the Helm Chart
+
+Lint the chart and deploy the release into the `wagtail` namespace, passing both `values.yaml` and your local `secrets.yaml`:
+
+```bash
+helm lint ./charts/django-app
+
+helm upgrade --install django-app ./charts/django-app \
+  -n wagtail \
+  --create-namespace \
+  -f ./charts/django-app/values.yaml \
+  -f ./charts/django-app/secrets.yaml
+
+```
+
+### 4. Verify the Deployment
+
+Check that both `postgres` and `django` pods are `Running`, the `Secret` is created, and retrieve the AWS LoadBalancer DNS name (`EXTERNAL-IP`):
+
+```bash
+kubectl get pods,svc,hpa,secret -n wagtail
+
+```
+
+Once the ELB finishes provisioning (1–2 minutes), verify HTTP access:
+
+```bash
+curl -I http://<EXTERNAL-IP>
 
 ```
 
 ## Cleanup
 
-Tear down all Terraform-managed resources in this configuration:
+First uninstall the Helm release so Kubernetes deletes the AWS Classic Load Balancer and releases its network interfaces, then tear down all Terraform-managed resources:
 
 ```bash
-cd ../../lesson-7
+helm uninstall django-app -n wagtail
 terraform destroy
 
 ```

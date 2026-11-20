@@ -41,11 +41,14 @@ postgres:
 env:
   DJANGO_SETTINGS_MODULE: "mysite.settings.docker"
   PORT: "8000"
-  SECRET_KEY: "django-insecure-ubwug8fvrjgh8(ljrj747v^_a_s(4dn*(!k1ep%4&+-s2=i-99"
   DEBUG: "True"
   ALLOWED_HOSTS: "*"
   POSTGRES_DB: "wagtail"
   POSTGRES_USER: "wagtail"
-  POSTGRES_PASSWORD: "wagtail"
   POSTGRES_HOST: "{{ .Release.Name }}-postgres"
   POSTGRES_PORT: "5432"
+
+# Чутливі дані (підуть у Secret, реальні значення передаємо при деплої)
+secrets:
+  SECRET_KEY: ""
+  POSTGRES_PASSWORD: ""
