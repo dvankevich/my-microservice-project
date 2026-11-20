@@ -15,7 +15,7 @@ for arg in "$@"; do
   case $arg in
     --fast) FAST_MODE=true ;;
     --with-db) WITH_DB=true ;;
-    *) echo "Невідомий параметр: $arg (доступні: --fast, --with-db)"; exit 1 ;;
+    *) echo "Unknown option: $arg (available: --fast, --with-db)"; exit 1 ;;
   esac
 done
 
@@ -23,10 +23,10 @@ REPORT_FILE="test-report-$(date +%Y-%m-%d_%H-%M).md"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-# Перевірка необхідних утиліт
+# Check required CLI utilities
 for cmd in kubectl curl openssl hey; do
   if ! command -v "$cmd" &>/dev/null; then
-    echo "Помилка: утиліта '$cmd' не встановлена."
+    echo "Error: required utility '$cmd' is not installed."
     exit 1
   fi
 done
@@ -46,16 +46,16 @@ cat <<EOF > "$REPORT_FILE"
 EOF
 
 # ------------------------------------------------------------------------------
-# 1. TLS та HTTP -> HTTPS редірект
+# 1. TLS and HTTP -> HTTPS Redirect
 # ------------------------------------------------------------------------------
-log "1. Перевірка TLS-сертифіката та HTTP-редіректу"
+log "1. Checking TLS certificate and HTTP-to-HTTPS redirect"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${DOMAIN}/")
 CERT_INFO=$(echo | openssl s_client -servername "$DOMAIN" -connect "${DOMAIN}:443" 2>/dev/null | openssl x509 -noout -issuer -subject -dates)
 
 if [[ "$HTTP_CODE" == "308" || "$HTTP_CODE" == "301" ]]; then
-  pass "HTTP редірект працює (код: $HTTP_CODE)"
+  pass "HTTP redirect is working (status: $HTTP_CODE)"
 else
-  warn "Неочікуваний код редіректу: $HTTP_CODE"
+  warn "Unexpected redirect status code: $HTTP_CODE"
 fi
 
 cat <<EOF >> "$REPORT_FILE"
@@ -73,24 +73,24 @@ EOF
 # ------------------------------------------------------------------------------
 # 2. High Availability & Self-Healing
 # ------------------------------------------------------------------------------
-log "2. Перевірка розподілу подів між нодами та Self-Healing"
+log "2. Checking pod distribution across nodes and Self-Healing"
 PODS_WIDE=$(kubectl get pods -n "$NAMESPACE" -o wide)
 UNIQUE_NODES=$(kubectl get pods -n "$NAMESPACE" -o wide --no-headers | awk '/^django-app-django-/ {print $7}' | sort -u | wc -l)
 
 if [[ "$UNIQUE_NODES" -ge 2 ]]; then
-  pass "Репліки Django розподілені між ${UNIQUE_NODES} різними нодами"
+  pass "Django replicas are distributed across ${UNIQUE_NODES} distinct nodes"
 else
-  warn "Усі репліки Django зараз на ${UNIQUE_NODES} ноді"
+  warn "All Django replicas are currently scheduled on ${UNIQUE_NODES} node(s)"
 fi
 
 VICTIM_POD=$(kubectl get pods -n "$NAMESPACE" --no-headers | awk '/^django-app-django-/ {print $1; exit}')
-echo "Видаляємо под $VICTIM_POD для перевірки самовідновлення..."
+echo "Deleting pod $VICTIM_POD to verify self-healing..."
 START_HEAL=$(date +%s)
 kubectl delete pod "$VICTIM_POD" -n "$NAMESPACE" --wait=false >/dev/null
 sleep 3
 kubectl rollout status deployment/"$DEPLOYMENT" -n "$NAMESPACE" --timeout=120s >/dev/null
 HEAL_DURATION=$(( $(date +%s) - START_HEAL ))
-pass "Самовідновлення завершено за ${HEAL_DURATION} сек"
+pass "Self-healing completed in ${HEAL_DURATION}s"
 
 PODS_AFTER_HEAL=$(kubectl get pods -n "$NAMESPACE" -o wide)
 
@@ -111,7 +111,7 @@ EOF
 # ------------------------------------------------------------------------------
 # 3. Zero-Downtime Rolling Update
 # ------------------------------------------------------------------------------
-log "3. Перевірка Zero-Downtime Rolling Update"
+log "3. Checking Zero-Downtime Rolling Update"
 PROBE_LOG="$TMP_DIR/rolling_probe.log"
 
 (
@@ -132,9 +132,9 @@ TOTAL_PROBES=$(wc -l < "$PROBE_LOG")
 FAILED_PROBES=$(awk '$2 != "200"' "$PROBE_LOG" | wc -l)
 
 if [[ "$FAILED_PROBES" -eq 0 ]]; then
-  pass "Rolling update без простою: ${TOTAL_PROBES}/${TOTAL_PROBES} запитів повернули 200 OK"
+  pass "Zero-downtime rolling update verified: ${TOTAL_PROBES}/${TOTAL_PROBES} requests returned 200 OK"
 else
-  warn "Зафіксовано ${FAILED_PROBES} неуспішних запитів із ${TOTAL_PROBES} під час оновлення"
+  warn "Recorded ${FAILED_PROBES} non-200 responses out of ${TOTAL_PROBES} probes during rollout"
 fi
 
 cat <<EOF >> "$REPORT_FILE"
@@ -147,9 +147,9 @@ cat <<EOF >> "$REPORT_FILE"
 EOF
 
 # ------------------------------------------------------------------------------
-# 4. Зовнішнє навантажувальне тестування (hey) + HPA
+# 4. External Load Testing (hey) + HPA
 # ------------------------------------------------------------------------------
-log "4. Запуск навантажувального тестування (hey -z 3m -c 30) та моніторинг HPA"
+log "4. Running external load test (hey -z 3m -c 30) and monitoring HPA"
 HPA_BEFORE=$(kubectl get hpa,pods -n "$NAMESPACE")
 HEY_LOG="$TMP_DIR/hey_output.txt"
 
@@ -169,15 +169,15 @@ while kill -0 "$HEY_PID" 2>/dev/null; do
 done
 wait "$HEY_PID"
 
-pass "Пікова кількість реплік під навантаженням: ${PEAK_REPLICAS}"
+pass "Peak replica count reached under load: ${PEAK_REPLICAS}"
 HEY_SUMMARY=$(cat "$HEY_LOG")
 
 if [[ "$FAST_MODE" == false ]]; then
-  log "Очікування зменшення реплік (scale-down) до minReplicas=2 (до 7 хв)..."
+  log "Waiting for HPA scale-down to minReplicas=2 (up to 7 min)..."
   for _ in {1..28}; do
     CUR=$(kubectl get hpa "$HPA_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentReplicas}')
     if [[ "$CUR" -eq 2 ]]; then
-      pass "HPA успішно повернув кількість реплік до 2"
+      pass "HPA successfully scaled replicas back down to 2"
       break
     fi
     sleep 15
@@ -216,14 +216,14 @@ ${HPA_AFTER}
 EOF
 
 # ------------------------------------------------------------------------------
-# 5. (Опціонально) Перевірка персистентності PostgreSQL EBS
+# 5. (Optional) PostgreSQL EBS Persistence Check
 # ------------------------------------------------------------------------------
 if [[ "$WITH_DB" == true ]]; then
-  log "5. Перевірка персистентності PostgreSQL (EBS + Recreate)"
+  log "5. Checking PostgreSQL persistence (EBS + Recreate strategy)"
   kubectl rollout restart deployment/"$POSTGRES_DEPLOYMENT" -n "$NAMESPACE" >/dev/null
   kubectl rollout status deployment/"$POSTGRES_DEPLOYMENT" -n "$NAMESPACE" --timeout=180s >/dev/null
   PVC_STATUS=$(kubectl get pvc,pv -n "$NAMESPACE")
-  pass "PostgreSQL перезапущено, PVC у стані Bound"
+  pass "PostgreSQL restarted successfully, PVC remains Bound"
 
   cat <<EOF >> "$REPORT_FILE"
 ## 5. PostgreSQL EBS Persistence Check
@@ -234,4 +234,4 @@ ${PVC_STATUS}
 EOF
 fi
 
-log "Готово! Повний звіт збережено у файл: ${REPORT_FILE}"
+log "Done! Full report saved to: ${REPORT_FILE}"

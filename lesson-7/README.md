@@ -1,6 +1,6 @@
 # Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, HTTPS access via `ingress-nginx` and `cert-manager`, and horizontal pod autoscaling via HPA.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, HTTPS access via `ingress-nginx` and `cert-manager`, horizontal pod autoscaling via HPA, and multi-node pod distribution via `topologySpreadConstraints`.
 
 ## Project Structure
 
@@ -41,7 +41,7 @@ lesson-7/
         └── templates/
             ├── configmap.yaml     # Non-sensitive environment variables (including CSRF_TRUSTED_ORIGINS)
             ├── secret.yaml        # Kubernetes Secret for SECRET_KEY and POSTGRES_PASSWORD
-            ├── deployment.yaml    # Django/Wagtail Deployment with PostgreSQL readiness initContainer
+            ├── deployment.yaml    # Django/Wagtail Deployment with PostgreSQL readiness initContainer and topologySpreadConstraints
             ├── postgres.yaml      # PostgreSQL 16 Deployment (Recreate strategy) and ClusterIP Service
             ├── pvc.yaml           # PersistentVolumeClaim (5Gi) for PostgreSQL data
             ├── storageclass.yaml  # Encrypted gp3 StorageClass (ebs.csi.aws.com, WaitForFirstConsumer)
@@ -56,33 +56,33 @@ lesson-7/
 
 Provisions remote state storage in AWS using the native S3 backend locking:
 
-* **S3 Bucket (`s3.tf`)**: Creates the state bucket (`tfstate-bucket-lesson5`), enables **Versioning** to preserve state history, and enforces `BucketOwnerEnforced` object ownership.
-* **State Locking**: Locking is handled natively by the S3 backend via `use_lockfile = true` in `backend.tf`. No separate DynamoDB table is required or provisioned.
+- **S3 Bucket (`s3.tf`)**: Creates the state bucket (`tfstate-bucket-lesson5`), enables **Versioning** to preserve state history, and enforces `BucketOwnerEnforced` object ownership.
+- **State Locking**: Locking is handled natively by the S3 backend via `use_lockfile = true` in `backend.tf`. No separate DynamoDB table is required or provisioned.
 
 ### `vpc` (`./modules/vpc`)
 
 Provisions core networking in `eu-central-1` (`10.0.0.0/16` by default in `main.tf`) across three availability zones (`eu-central-1a`, `eu-central-1b`, `eu-central-1c`):
 
-* **VPC, Subnets & NAT Gateway (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), an Internet Gateway (`igw`), and a single shared NAT Gateway (`nat`) with an Elastic IP (`aws_eip.nat`) placed in the first public subnet (`public[0]`) to keep test environment costs down.
-* **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway associated with all public subnets, and a shared private route table with a `0.0.0.0/0` route pointing to the NAT Gateway associated with all private subnets.
+- **VPC, Subnets & NAT Gateway (`vpc.tf`)**: Creates a VPC with DNS support and DNS hostnames enabled, three public subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`) with `map_public_ip_on_launch = true`, three private subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`), an Internet Gateway (`igw`), and a single shared NAT Gateway (`nat`) with an Elastic IP (`aws_eip.nat`) placed in the first public subnet (`public[0]`) to keep test environment costs down.
+- **Routing (`routes.tf`)**: Creates a public route table with a `0.0.0.0/0` route pointing to the Internet Gateway associated with all public subnets, and a shared private route table with a `0.0.0.0/0` route pointing to the NAT Gateway associated with all private subnets.
 
 ### `ecr` (`./modules/ecr`)
 
 Provisions a private Amazon ECR repository intended for container images shared across compute workloads such as ECS and EKS:
 
-* **Repository (`ecr.tf`)**: Creates an `aws_ecr_repository` (default name `lesson-5-ecr`) with `MUTABLE` image tags, `force_delete = true` (allowing deletion even when images are present), and `scan_on_push = true` enabled for vulnerability scanning.
-* **Repository Policy (`ecr.tf`)**: Attaches an `aws_ecr_repository_policy` scoped to the current AWS account (`data.aws_caller_identity.current`) to allow image push and pull operations for account principals and workloads.
+- **Repository (`ecr.tf`)**: Creates an `aws_ecr_repository` (default name `lesson-5-ecr`) with `MUTABLE` image tags, `force_delete = true` (allowing deletion even when images are present), and `scan_on_push = true` enabled for vulnerability scanning.
+- **Repository Policy (`ecr.tf`)**: Attaches an `aws_ecr_repository_policy` scoped to the current AWS account (`data.aws_caller_identity.current`) to allow image push and pull operations for account principals and workloads.
 
 ### `eks` (`./modules/eks`)
 
 Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the public subnets created by the `vpc` module. The cluster is intended as a lightweight development/test environment for containerized workloads that pull images from the ECR repository.
 
-* **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
-* **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 2`, `min_size = 2`, `max_size = 3`).
-  * **Why `t3.small` (2 nodes) instead of `t3.micro` (1 node):** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 2 `t3.small` nodes provides enough pod slots and memory for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, and horizontally scaled Django pods without `Too many pods` scheduling errors.
-  * **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
-* **EBS CSI Driver & IRSA (`ebs-csi.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to the `kube-system:ebs-csi-controller-sa` service account, and installs the `aws-ebs-csi-driver` EKS add-on so Kubernetes can dynamically provision and attach AWS EBS volumes for stateful workloads.
-* **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
+- **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
+- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 2`, `min_size = 2`, `max_size = 3`).
+  - **Why `t3.small` (2 nodes) instead of `t3.micro` (1 node):** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 2 `t3.small` nodes provides enough pod slots and memory for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, and horizontally scaled Django pods without `Too many pods` scheduling errors.
+  - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
+- **EBS CSI Driver & IRSA (`ebs-csi.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to the `kube-system:ebs-csi-controller-sa` service account, and installs the `aws-ebs-csi-driver` EKS add-on so Kubernetes can dynamically provision and attach AWS EBS volumes for stateful workloads.
+- **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
 
 ## Usage
 
@@ -191,7 +191,7 @@ kubectl get nodes
 Install the NGINX Ingress Controller, which provisions a single AWS LoadBalancer for external HTTP/HTTPS traffic:
 
 ```bash
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo add ingress-nginx [https://kubernetes.github.io/ingress-nginx](https://kubernetes.github.io/ingress-nginx)
 helm repo update
 
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
@@ -207,8 +207,8 @@ kubectl get svc -n ingress-nginx
 
 Configure DNS for your domain (`django-app.dvankevich.pp.ua`):
 
-* **Recommended (`CNAME` record):** Point `django-app` to the `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`).
-* **Alternative (`A` record):** Resolve the ELB's current IPv4 addresses with `dig +short <EXTERNAL-IP>` and add them as `A` records.
+- **Recommended (`CNAME` record):** Point `django-app` to the `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`).
+- **Alternative (`A` record):** Resolve the ELB's current IPv4 addresses with `dig +short <EXTERNAL-IP>` and add them as `A` records.
 
 Verify DNS propagation before issuing certificates:
 
@@ -221,7 +221,7 @@ dig +short django-app.dvankevich.pp.ua
 Install `cert-manager` with CRDs enabled:
 
 ```bash
-helm repo add jetstack https://charts.jetstack.io
+helm repo add jetstack [https://charts.jetstack.io](https://charts.jetstack.io)
 helm repo update
 
 helm upgrade --install cert-manager jetstack/cert-manager \
@@ -233,80 +233,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 Once the `cert-manager` pods are `Running`, create the production ACME `ClusterIssuer`:
 
 ```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: admin@dvankevich.pp.ua
-    privateKeySecretRef:
-      name: letsencrypt-prod-key
-    solvers:
-      - http01:
-          ingress:
-            class: nginx
-EOF
-```
-
-### 4. Prepare Local Secrets File
-
-Copy the example secrets template and populate your actual `SECRET_KEY` and `POSTGRES_PASSWORD`. The `charts/**/secrets.yaml` file is excluded via `.gitignore` so credentials are never committed to version control:
-
-```bash
-cp charts/django-app/secrets.yaml.example charts/django-app/secrets.yaml
-# Edit charts/django-app/secrets.yaml with your actual credentials
-```
-
-### 5. Validate and Install the Helm Chart
-
-Lint the chart and deploy the release into the `wagtail` namespace, passing both `values.yaml` and your local `secrets.yaml`:
-
-```bash
-helm lint ./charts/django-app
-
-helm upgrade --install django-app ./charts/django-app \
-  -n wagtail \
-  --create-namespace \
-  -f ./charts/django-app/values.yaml \
-  -f ./charts/django-app/secrets.yaml
-```
-
-*(If updating an existing deployment after pushing a new image with the `:latest` tag, run `kubectl rollout restart deployment/django-app-django -n wagtail` to pull the updated image.)*
-
-### 6. Verify the Deployment and TLS Certificate
-
-Check that the `PersistentVolumeClaim` is `Bound`, all pods are `Running`, and the TLS `Certificate` reaches `READY: True` (takes ~1–2 minutes for the Let's Encrypt HTTP-01 challenge):
-
-```bash
-kubectl get pvc,pv,pods,svc,ingress,certificate,hpa,secret -n wagtail
-```
-
-Verify HTTPS access:
-
-```bash
-curl -I https://django-app.dvankevich.pp.ua
-```
-
-### 7. Create Django/Wagtail Superuser
-
-Once both `postgres` and `django` pods reach the `1/1 Running` state (ensuring database migrations in `entrypoint.sh` have completed), create an administrative user non-interactively via environment variables:
-
-```bash
-kubectl exec deployment/django-app-django -n wagtail -- \
-  env DJANGO_SUPERUSER_USERNAME=admin \
-      DJANGO_SUPERUSER_EMAIL=admin@example.com \
-      DJANGO_SUPERUSER_PASSWORD=your_password \
-  python manage.py createsuperuser --noinput
-```
-
-*(Alternatively, run `kubectl exec -it deployment/django-app-django -n wagtail -- python manage.py createsuperuser` for interactive prompts.)*
-
-Afterward, sign in to the Wagtail admin interface at `https://django-app.dvankevich.pp.ua/admin/`.
-
-> **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
+cat <<EOF # ### (ensuring (takes *(Alternatively, *(If - -- --create-namespace --install --noinput -I -f -it -n ./charts/django-app ./charts/django-app/secrets.yaml ./charts/django-app/values.yaml 4. 5. 6. 7. Afterward, Certificate Chart Check ClusterIssuer Copy Create DJANGO_SUPERUSER_EMAIL="admin@example.com" DJANGO_SUPERUSER_PASSWORD="your_password" DJANGO_SUPERUSER_USERNAME="admin" Deployment Django/Wagtail EOF Edit Encrypt File HTTP-01 HTTPS Helm Install Let's Lint Local Once Prepare Running` Secrets Superuser TLS The True` Validate Verify Wagtail \ `.gitignore` `1/1 `:latest` `Bound`, `Certificate` `POSTGRES_PASSWORD`. `PersistentVolumeClaim` `READY: `Running`, `SECRET_KEY` ``` ```bash `charts/**/secrets.yaml` `django` `entrypoint.sh` `[https://django-app.dvankevich.pp.ua/admin/](https://django-app.dvankevich.pp.ua/admin/)`. `kubectl `postgres` `secrets.yaml`: `values.yaml` `wagtail` a access: acme: actual admin admin@dvankevich.pp.ua administrative after all an and apiVersion: apply are at both cert-manager.io/v1 challenge): chart charts/django-app/secrets.yaml charts/django-app/secrets.yaml.example class: committed completed), control: cp create createsuperuser createsuperuser` credentials curl database deploy deployment deployment/django-app-django django-app email: env environment example excluded exec existing file for get have helm http01: [https://acme-v02.api.letsencrypt.org/directory](https://acme-v02.api.letsencrypt.org/directory) [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua) image image.)* in ingress: interactive interface into is kind: kubectl letsencrypt-prod letsencrypt-prod-key lint local manage.py metadata: migrations minutes name: namespace, never new nginx non-interactively passing pods populate privateKeySecretRef: prompts.)* pull pushing pvc,pv,pods,svc,ingress,certificate,hpa,secret python reach reaches release restart rollout run secrets server: sign so solvers: spec: state tag, template that the to updated updating upgrade user variables: version via wagtail wagtail` with your | ~1–2> **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
 
 ## Horizontal Pod Autoscaler (HPA) Configuration
 
@@ -366,6 +293,32 @@ kubectl get hpa,pods -n wagtail
 ```
 
 > **Load Testing:** For instructions and examples on generating synthetic CPU/HTTP load to verify automatic scaling from `2` to `6` pods, see [`LOAD_TESTING.md`](./LOAD_TESTING.md).
+
+## Pod Distribution & High Availability (`topologySpreadConstraints`)
+
+By default, the Kubernetes scheduler places new pods based solely on available node resources. During pod recreation (self-healing) or HPA scale-out events, multiple Django replicas can end up scheduled on the same worker node, reducing fault tolerance if that node or Availability Zone fails.
+
+To prevent single-node concentration, `charts/django-app/templates/deployment.yaml` defines `topologySpreadConstraints`:
+
+```yaml
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app: {{ .Release.Name }}-django
+```
+
+- **`maxSkew: 1`:** Limits the difference in Django pod counts between any two worker nodes to at most `1` (distributing pods as `1 + 1` at 2 replicas, `2 + 2` at 4 replicas, and `3 + 3` at 6 replicas).
+- **`topologyKey: kubernetes.io/hostname`:** Spreads pods evenly across distinct EKS worker nodes. Because the node group spans multiple public subnets (`eu-central-1a` and `eu-central-1b`), this also provides Multi-AZ resilience.
+- **`whenUnsatisfiable: ScheduleAnyway`:** Applies a soft scheduling constraint so pods are evenly balanced during normal operation and self-healing, while still allowing replicas to run on a single surviving node if another node becomes unavailable.
+
+Verify that Django replicas are scheduled across distinct nodes:
+
+```bash
+kubectl get pods -n wagtail -o wide
+```
 
 ## Cleanup
 

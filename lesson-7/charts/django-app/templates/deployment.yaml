@@ -14,6 +14,13 @@ spec:
       labels:
         app: {{ .Release.Name }}-django
     spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: {{ .Release.Name }}-django
       {{- if .Values.postgres.enabled }}
       initContainers:
         - name: wait-for-postgres
