@@ -6,11 +6,20 @@ image:
   pullPolicy: Always
 
 service:
-  type: LoadBalancer
+  type: ClusterIP
   port: 80
   targetPort: 8000
 
-# Оптимізовано під інстанс t3.micro (1 GB RAM)
+ingress:
+  enabled: true
+  className: "nginx"
+  host: "django-app.dvankevich.pp.ua"
+  tls:
+    enabled: true
+    secretName: "django-app-tls"
+    clusterIssuer: "letsencrypt-prod"
+
+# Оптимізовано під інстанс t3.small (2 GB RAM)
 resources:
   requests:
     cpu: 100m
@@ -56,3 +65,4 @@ env:
 secrets:
   SECRET_KEY: ""
   POSTGRES_PASSWORD: ""
+  
