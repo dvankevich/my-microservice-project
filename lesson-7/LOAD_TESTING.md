@@ -1,6 +1,6 @@
-# Load Testing Guide & HPA Verification (`django-app`)
+# Load Testing Guide, HPA & High Availability Verification (`django-app`)
 
-This document describes how to verify **Horizontal Pod Autoscaler (HPA)** behavior for the `django-app-django` deployment on Amazon EKS and records actual load test results.
+This document describes how to verify **Horizontal Pod Autoscaler (HPA)** behavior and **High Availability (HA) / Self-Healing** resilience for the `django-app-django` deployment on Amazon EKS, along with recorded test results.
 
 ## HPA Configuration & Scaling Thresholds
 
@@ -16,11 +16,14 @@ The `charts/django-app` Helm chart defines an `autoscaling/v2` HPA resource (`dj
 
 ## Monitoring Commands
 
-Before starting a load test, open a separate terminal window to observe HPA metrics and pod lifecycle events in real time:
+Before starting a test, open a separate terminal window to observe HPA metrics, node placement, and pod lifecycle events in real time:
 
 ```bash
 # Watch HPA targets, replica counts, and pod statuses every 2–10 seconds
 watch -n 2 kubectl get hpa,pods -n wagtail
+
+# Check pod-to-node distribution across Availability Zones
+kubectl get pods -n wagtail -o wide
 
 # Inspect live CPU and memory consumption per pod (requires metrics-server)
 kubectl top pods -n wagtail
@@ -29,7 +32,7 @@ kubectl top pods -n wagtail
 kubectl describe hpa django-app-django-hpa -n wagtail
 ```
 
-## Load Testing Scenarios
+## Verification & Load Testing Scenarios
 
 ### Scenario 1: In-Cluster HTTP Load Generator (`busybox`)
 
@@ -53,6 +56,18 @@ hey -z 3m -c 30 https://django-app.dvankevich.pp.ua/
 * `-z 3m`: Runs the benchmark for 3 minutes (long enough to observe HPA scale-out and stabilization).
 * `-c 30`: Maintains 30 concurrent worker connections.
 
+### Scenario 3: Multi-Node Distribution & Self-Healing (`High Availability`)
+
+Verifies that `django-app-django` replicas are scheduled across separate worker nodes/Availability Zones and that the ReplicaSet controller automatically replaces a terminated pod without service disruption:
+
+```bash
+# 1. Verify node placement across subnets/AZs
+kubectl get pods -n wagtail -o wide
+
+# 2. Simulate an unexpected pod crash by deleting one active Django replica
+kubectl delete pod <django-pod-name> -n wagtail
+```
+
 ---
 
 ## Recorded Load Test Results (Scenario 1 — In-Cluster `busybox`)
@@ -64,7 +79,7 @@ hey -z 3m -c 30 https://django-app.dvankevich.pp.ua/
 ### Summary Timeline (Scenario 1)
 
 | Stage | Timestamp | CPU Utilization (`Target: 70%`) | Desired / Active Replicas | Observation |
-| :--- | :--- | :--- | :--- | :--- |
+| ----- | ----- | ----- | ----- | ----- |
 | **1. Baseline** | `19:53:38` | `1% / 70%` | `2` | Idle state at `minReplicas: 2`. |
 | **2. Load Spike** | `19:55:18` | `92% / 70%` | `2 -> 3+` | `load-generator` running for `41s`; CPU exceeds `70%`, HPA initiates scale-up (`24dwz` created). |
 | **3. Sustained Load** | `19:56:33` | `57% / 70%` | `4` | HPA scales out to `4` pods (`24dwz`, `cddjz`, `lbg46`, `vcflh`), bringing per-pod average CPU down to `57%`. |
@@ -172,7 +187,7 @@ pod/django-app-postgres-8578df859b-tbcrl   1/1     Running   0          5h24m
 ### Summary Timeline (Scenario 2)
 
 | Stage | Timestamp | CPU Utilization (`Target: 70%`) | Active Django Pods | Observation |
-| :--- | :--- | :--- | :--- | :--- |
+| ----- | ----- | ----- | ----- | ----- |
 | **1. Baseline** | `20:12:39` | `1% / 70%` | `2` | Idle state before external test (`cddjz`, `vcflh`). |
 | **2. Load Spike** | `20:13:40` | `115% / 70%` | `4` | CPU surges to `115%`; HPA scales from `2` to `4` pods (`6c9vf` and `kdwg2` added). |
 | **3. Sustained Load** | `20:14:28` | `60% / 70%` | `4` | `4` pods absorb the 30 concurrent HTTPS connections at `60%` average CPU (`< 70%`). |
@@ -182,7 +197,7 @@ pod/django-app-postgres-8578df859b-tbcrl   1/1     Running   0          5h24m
 ### HTTP Benchmark Summary (`hey`)
 
 | Metric | Value | Notes |
-| :--- | :--- | :--- |
+| ----- | ----- | ----- |
 | **Total Requests** | `2,311` | Completed in `181.90s` (`~3 minutes`) |
 | **Success Rate (HTTP 200)** | `100%` (`2,311 / 2,311`) | **Zero `502`/`503`/`504` errors** during live pod scale-out |
 | **Throughput** | `12.71 req/s` | Sustained across `30` concurrent connections |
@@ -315,4 +330,62 @@ NAME                                       READY   STATUS    RESTARTS   AGE
 pod/django-app-django-9d4964c78-cddjz      1/1     Running   0          80m
 pod/django-app-django-9d4964c78-vcflh      1/1     Running   0          42m
 pod/django-app-postgres-8578df859b-tbcrl   1/1     Running   0          5h40m
+```
+
+---
+
+## Recorded Resilience Test Results (Scenario 3 — High Availability & Self-Healing)
+
+* **Date:** November 20, 2026
+* **Cluster:** `eks-cluster-demo` (`eu-central-1`, Multi-AZ deployment across `eu-central-1a` and `eu-central-1b`)
+
+### Summary Findings (Scenario 3)
+
+| Verification Check | Result | Details |
+| ----- | ----- | ----- |
+| **Multi-AZ Node Placement** | **Passed** | Active Django replicas (`cddjz` and `vcflh`) scheduled on separate worker nodes in distinct Availability Zones (`10.0.2.0/24` and `10.0.1.0/24`). |
+| **Pod Self-Healing** | **Passed** | After deleting `django-app-django-9d4964c78-vcflh`, Kubernetes scheduled replacement pod `django-app-django-9d4964c78-h4j7h` (`1/1 Running` within `17s`), maintaining `REPLICAS: 2` with zero downtime. |
+
+### Detailed Console Outputs (Scenario 3)
+
+#### 1. Multi-Node / Multi-AZ Pod Distribution
+
+`kubectl get pods -n wagtail -o wide` confirms that the two baseline Django replicas are distributed across both worker nodes (`ip-10-0-2-95` in `eu-central-1b` and `ip-10-0-1-228` in `eu-central-1a`):
+
+```text
+kubectl get pods -n wagtail -o wide
+NAME                                   READY   STATUS    RESTARTS   AGE     IP           NODE                                          NOMINATED NODE   READINESS GATES
+django-app-django-9d4964c78-cddjz      1/1     Running   0          84m     10.0.2.170   ip-10-0-2-95.eu-central-1.compute.internal    <none>           <none>
+django-app-django-9d4964c78-vcflh      1/1     Running   0          46m     10.0.1.69    ip-10-0-1-228.eu-central-1.compute.internal   <none>           <none>
+django-app-postgres-8578df859b-tbcrl   1/1     Running   0          5h44m   10.0.1.150   ip-10-0-1-228.eu-central-1.compute.internal   <none>           <none>
+```
+
+#### 2. State Before Pod Termination (`20:26:02`)
+
+```text
+Every 10,0s: kubectl get hpa,pods -n wagtail                                 v14: Fri Nov 20 20:26:02 2026
+
+NAME                                                        REFERENCE                      TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+horizontalpodautoscaler.autoscaling/django-app-django-hpa   Deployment/django-app-django   cpu: 1%/70%   2         6         2          23h
+
+NAME                                       READY   STATUS    RESTARTS   AGE
+pod/django-app-django-9d4964c78-cddjz      1/1     Running   0          85m
+pod/django-app-django-9d4964c78-vcflh      1/1     Running   0          47m
+pod/django-app-postgres-8578df859b-tbcrl   1/1     Running   0          5h45m
+```
+
+#### 3. Automatic Pod Recovery (`20:27:28`)
+
+Following manual termination of `pod/django-app-django-9d4964c78-vcflh`, the ReplicaSet controller immediately provisions replacement `pod/django-app-django-9d4964c78-h4j7h` (`1/1 Running`, `AGE: 17s`):
+
+```text
+Every 10,0s: kubectl get hpa,pods -n wagtail                                 v14: Fri Nov 20 20:27:28 2026
+
+NAME                                                        REFERENCE                      TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+horizontalpodautoscaler.autoscaling/django-app-django-hpa   Deployment/django-app-django   cpu: 1%/70%   2         6         2          23h
+
+NAME                                       READY   STATUS    RESTARTS   AGE
+pod/django-app-django-9d4964c78-cddjz      1/1     Running   0          86m
+pod/django-app-django-9d4964c78-h4j7h      1/1     Running   0          17s
+pod/django-app-postgres-8578df859b-tbcrl   1/1     Running   0          5h46m
 ```
