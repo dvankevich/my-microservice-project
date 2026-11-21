@@ -1,6 +1,9 @@
+Ось оновлений `README.md`, доповнений описом модуля `jenkins`, інструкцією з підготовки DNS та масштабування нод під CI/CD-агентів, кроками розгортання через Terraform та видалення ресурсів (а також виправленими посиланнями та YAML-відступами всередині блоків коду):
+
+```markdown
 # Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, HTTPS access via `ingress-nginx` and `cert-manager`, horizontal pod autoscaling via HPA, and multi-node pod distribution via `topologySpreadConstraints`.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, HTTPS access via `ingress-nginx` and `cert-manager`, horizontal pod autoscaling via HPA, multi-node pod distribution via `topologySpreadConstraints`, and a Jenkins CI/CD server provisioned via the Terraform Helm provider.
 
 ## Project Structure
 
@@ -9,8 +12,11 @@ lesson-7/
 ├── .gitignore                 # Ignores Terraform state/cache and local Helm secrets.yaml
 ├── README.md                  # Infrastructure and deployment documentation
 ├── LOAD_TESTING.md            # Load testing guide and HPA scaling verification scenarios
+├── AUTOMATED_TESTING.md       # Documentation for the automated infrastructure test script
+├── run-tests.sh               # Automated TLS, HA, rolling update, and load testing script
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
-├── main.tf                    # Root module wiring s3_backend, vpc, ecr, and eks modules
+├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, and jenkins modules
+├── variables.tf               # Root input variables (including sensitive Jenkins admin password)
 ├── outputs.tf                 # Root outputs
 ├── .terraform.lock.hcl        # Provider dependency lock file
 ├── modules/
@@ -24,6 +30,12 @@ lesson-7/
 │   │   ├── node.tf            # Managed node group and node IAM role
 │   │   ├── outputs.tf
 │   │   └── variables.tf
+│   ├── jenkins/
+│   │   ├── jenkins.tf         # Helm release resource for Jenkins
+│   │   ├── outputs.tf         # Outputs release name, namespace, and HTTPS URL
+│   │   ├── values.yaml        # Jenkins controller, plugins, Ingress, and persistence settings
+│   │   ├── variables.tf       # Module input variables
+│   │   └── versions.tf        # Required Helm provider version constraint
 │   ├── s3-backend/
 │   │   ├── outputs.tf         # Outputs S3 bucket name
 │   │   ├── s3.tf              # S3 state bucket, versioning, and ownership controls
@@ -78,11 +90,20 @@ Provisions a private Amazon ECR repository intended for container images shared 
 Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the public subnets created by the `vpc` module. The cluster is intended as a lightweight development/test environment for containerized workloads that pull images from the ECR repository.
 
 - **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
-- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 2`, `min_size = 2`, `max_size = 3`).
-  - **Why `t3.small` (2 nodes) instead of `t3.micro` (1 node):** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 2 `t3.small` nodes provides enough pod slots and memory for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, and horizontally scaled Django pods without `Too many pods` scheduling errors.
+- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 3`, `min_size = 2`, `max_size = 4`).
+  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, horizontally scaled Django pods, and the Jenkins controller with dynamic Kubernetes build agents without `Too many pods` scheduling errors.
   - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
 - **EBS CSI Driver & IRSA (`ebs-csi.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to the `kube-system:ebs-csi-controller-sa` service account, and installs the `aws-ebs-csi-driver` EKS add-on so Kubernetes can dynamically provision and attach AWS EBS volumes for stateful workloads.
 - **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
+
+### `jenkins` (`./modules/jenkins`)
+
+Deploys Jenkins into the `jenkins` namespace using the Terraform `helm` provider authenticated via short-lived EKS IAM tokens (`data.aws_eks_cluster_auth`):
+
+- **Helm Release (`jenkins.tf` & `values.yaml`)**: Installs the official `jenkinsci/jenkins` chart as a `ClusterIP` service and exposes it externally over HTTPS (`https://jenkins.dvankevich.pp.ua`) through the existing `ingress-nginx` controller and `cert-manager` (`letsencrypt-prod`), avoiding the cost of provisioning a second AWS LoadBalancer.
+- **Persistent Storage**: Provisions a dedicated `10Gi` AWS EBS volume via the cluster's `ebs-gp3` `StorageClass` (`persistence.storageClass = "ebs-gp3"`) to persist `/var/jenkins_home` (jobs, plugins, credentials, and build history) across pod restarts.
+- **Pre-installed CI/CD Plugins**: Automatically installs `kubernetes`, `workflow-aggregator`, `git`, `configuration-as-code`, `credentials-binding`, and `github` during deployment so Jenkins can spawn dynamic ephemeral build agent pods inside EKS.
+- **Credential Management**: Injects the administrator password via Terraform's sensitive variable (`TF_VAR_jenkins_admin_password` mapped to `set_sensitive`) so credentials are never hardcoded in Git.
 
 ## Usage
 
@@ -105,6 +126,7 @@ terraform init
 Preview the execution plan and verify which resources will be created, changed, or destroyed:
 
 ```bash
+export TF_VAR_jenkins_admin_password="your_strong_jenkins_password"
 terraform plan
 ```
 
@@ -115,6 +137,8 @@ Provision or update the infrastructure in AWS:
 ```bash
 terraform apply
 ```
+
+*(Note: When provisioning the cluster from scratch, deploy the core AWS resources first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks`, install `ingress-nginx`, `cert-manager`, and the `ebs-gp3` `StorageClass`, and then run `terraform apply` to deploy the `jenkins` Helm release.)*
 
 ## Build and Push Django Docker Image to ECR
 
@@ -179,7 +203,7 @@ The `charts/django-app` Helm chart separates non-sensitive configuration (`Confi
 
 ### 1. Configure `kubectl` for EKS
 
-Update your local kubeconfig to connect to the `eks-cluster-demo` cluster and verify both nodes are `Ready`:
+Update your local kubeconfig to connect to the `eks-cluster-demo` cluster and verify all nodes are `Ready`:
 
 ```bash
 aws eks update-kubeconfig --region "$AWS_REGION" --name eks-cluster-demo
@@ -369,7 +393,7 @@ helm upgrade --install django-app ./charts/django-app \
 kubectl get hpa,pods -n wagtail
 ```
 
-> **Load Testing:** For instructions and examples on generating synthetic CPU/HTTP load to verify automatic scaling from `2` to `6` pods, see [`LOAD_TESTING.md`](./LOAD_TESTING.md).
+> **Load Testing:** For instructions and automated verification scripts covering TLS, High Availability, Zero-Downtime Rolling Updates, and HPA scaling, see [`LOAD_TESTING.md`](./LOAD_TESTING.md) and [`AUTOMATED_TESTING.md`](./AUTOMATED_TESTING.md).
 
 ## Pod Distribution & High Availability (`topologySpreadConstraints`)
 
@@ -397,15 +421,85 @@ Verify that Django replicas are scheduled across distinct nodes:
 kubectl get pods -n wagtail -o wide
 ```
 
-## Cleanup
+## Deploy Jenkins CI/CD Server via Terraform & Helm
 
-Uninstall all Helm releases first so Kubernetes deletes the AWS Classic Load Balancer (`ingress-nginx`), delete the `PersistentVolumeClaim` so AWS deletes the underlying EBS volume, and finally tear down all Terraform-managed resources:
+Jenkins is deployed through the `./modules/jenkins` Terraform module, which reuses the existing `aws-ebs-csi-driver` (`ebs-gp3` `StorageClass`), `ingress-nginx`, and `cert-manager` (`letsencrypt-prod`) components.
+
+### 1. Configure DNS for Jenkins
+
+Retrieve the `EXTERNAL-IP` (ELB DNS hostname) of `ingress-nginx-controller`:
 
 ```bash
+kubectl get svc -n ingress-nginx
+```
+
+In your DNS provider for `dvankevich.pp.ua`, create a `CNAME` record for `jenkins` pointing to the same `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`) used by `django-app`. Verify DNS propagation:
+
+```bash
+dig +short jenkins.dvankevich.pp.ua
+```
+
+### 2. Ensure Sufficient Cluster Capacity (3 Nodes)
+
+If upgrading an existing 2-node cluster, increase the managed node group size to `3` `t3.small` nodes so there are enough pod slots and memory for the Jenkins controller and dynamic Kubernetes agent pods alongside Django and PostgreSQL. First update `max_size = 4` in `main.tf` via Terraform, then scale the active node count via AWS CLI:
+
+```bash
+export TF_VAR_jenkins_admin_password="your_strong_jenkins_password"
+terraform apply -target=module.eks
+
+aws eks update-nodegroup-config \
+  --region eu-central-1 \
+  --cluster-name eks-cluster-demo \
+  --nodegroup-name general \
+  --scaling-config minSize=2,maxSize=4,desiredSize=3
+
+kubectl get nodes
+```
+
+### 3. Ensure `ebs-gp3` StorageClass Exists
+
+The `ebs-gp3` `StorageClass` is created by the `django-app` Helm chart. If deploying Jenkins before installing `django-app`, apply the `StorageClass` manifest standalone:
+
+```bash
+kubectl apply -f charts/django-app/templates/storageclass.yaml
+```
+
+### 4. Apply Terraform to Install Jenkins
+
+Initialize the new `jenkins` module and apply the configuration:
+
+```bash
+export TF_VAR_jenkins_admin_password="your_strong_jenkins_password"
+terraform init
+terraform apply
+```
+
+### 5. Verify Jenkins Deployment and HTTPS Access
+
+Check that the `10Gi` EBS `PersistentVolumeClaim` is `Bound`, the `jenkins-0` pod reaches `2/2 Running` (controller + JCasC sidecar), and the TLS `Certificate` is `READY: True`:
+
+```bash
+kubectl get pvc,pv,pods,svc,ingress,certificate -n jenkins
+```
+
+Once ready, open `https://jenkins.dvankevich.pp.ua` in your browser and sign in using username `admin` and the password set in `TF_VAR_jenkins_admin_password`.
+
+## Cleanup
+
+Remove the Jenkins Helm release and its `PersistentVolumeClaim` first so Terraform can cleanly destroy the release and AWS deletes the underlying EBS volume, then uninstall the remaining Helm releases and tear down the Terraform-managed infrastructure:
+
+```bash
+export TF_VAR_jenkins_admin_password="placeholder_for_destroy"
+terraform destroy -target=module.jenkins
+kubectl delete pvc -n jenkins --all
+
 helm uninstall django-app -n wagtail
 kubectl delete pvc django-app-postgres-pvc -n wagtail
 helm uninstall cert-manager -n cert-manager
 helm uninstall ingress-nginx -n ingress-nginx
 helm uninstall metrics-server -n kube-system
+
 terraform destroy
+```
+
 ```
