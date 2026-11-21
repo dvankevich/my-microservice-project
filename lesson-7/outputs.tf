@@ -56,3 +56,20 @@ output "eks_node_role_arn" {
   description = "IAM role ARN for EKS Worker Nodes"
   value       = module.eks.eks_node_role_arn
 }
+
+#-------------Jenkins-------------
+
+output "jenkins_release" {
+  description = "Ім'я Helm-релізу Jenkins"
+  value       = module.jenkins.jenkins_release_name
+}
+
+output "jenkins_namespace" {
+  description = "Namespace, у якому розгорнуто Jenkins"
+  value       = module.jenkins.jenkins_namespace
+}
+
+output "jenkins_url" {
+  description = "URL веб-інтерфейсу Jenkins"
+  value       = module.jenkins.jenkins_url
+}
