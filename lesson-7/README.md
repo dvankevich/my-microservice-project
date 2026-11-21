@@ -230,10 +230,87 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --set crds.enabled=true
 ```
 
-Once the `cert-manager` pods are `Running`, create the production ACME `ClusterIssuer`:
+Once the `cert-manager` pods are `Running`, save the production ACME `ClusterIssuer` manifest to `cluster-issuer.yaml`:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: [https://acme-v02.api.letsencrypt.org/directory](https://acme-v02.api.letsencrypt.org/directory)
+    email: admin@dvankevich.pp.ua
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+```
+
+Apply the `ClusterIssuer` to the cluster:
 
 ```bash
-cat <<EOF # ### (ensuring (takes *(Alternatively, *(If - -- --create-namespace --install --noinput -I -f -it -n ./charts/django-app ./charts/django-app/secrets.yaml ./charts/django-app/values.yaml 4. 5. 6. 7. Afterward, Certificate Chart Check ClusterIssuer Copy Create DJANGO_SUPERUSER_EMAIL="admin@example.com" DJANGO_SUPERUSER_PASSWORD="your_password" DJANGO_SUPERUSER_USERNAME="admin" Deployment Django/Wagtail EOF Edit Encrypt File HTTP-01 HTTPS Helm Install Let's Lint Local Once Prepare Running` Secrets Superuser TLS The True` Validate Verify Wagtail \ `.gitignore` `1/1 `:latest` `Bound`, `Certificate` `POSTGRES_PASSWORD`. `PersistentVolumeClaim` `READY: `Running`, `SECRET_KEY` ``` ```bash `charts/**/secrets.yaml` `django` `entrypoint.sh` `[https://django-app.dvankevich.pp.ua/admin/](https://django-app.dvankevich.pp.ua/admin/)`. `kubectl `postgres` `secrets.yaml`: `values.yaml` `wagtail` a access: acme: actual admin admin@dvankevich.pp.ua administrative after all an and apiVersion: apply are at both cert-manager.io/v1 challenge): chart charts/django-app/secrets.yaml charts/django-app/secrets.yaml.example class: committed completed), control: cp create createsuperuser createsuperuser` credentials curl database deploy deployment deployment/django-app-django django-app email: env environment example excluded exec existing file for get have helm http01: [https://acme-v02.api.letsencrypt.org/directory](https://acme-v02.api.letsencrypt.org/directory) [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua) image image.)* in ingress: interactive interface into is kind: kubectl letsencrypt-prod letsencrypt-prod-key lint local manage.py metadata: migrations minutes name: namespace, never new nginx non-interactively passing pods populate privateKeySecretRef: prompts.)* pull pushing pvc,pv,pods,svc,ingress,certificate,hpa,secret python reach reaches release restart rollout run secrets server: sign so solvers: spec: state tag, template that the to updated updating upgrade user variables: version via wagtail wagtail` with your | ~1–2> **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
+kubectl apply -f cluster-issuer.yaml
+```
+
+### 4. Prepare Local Secrets File
+
+Copy the example secrets template and populate your actual `SECRET_KEY` and `POSTGRES_PASSWORD`. The `charts/**/secrets.yaml` file is excluded via `.gitignore` so credentials are never committed to version control:
+
+```bash
+cp charts/django-app/secrets.yaml.example charts/django-app/secrets.yaml
+# Edit charts/django-app/secrets.yaml with your actual credentials
+```
+
+### 5. Validate and Install the Helm Chart
+
+Lint the chart and deploy the release into the `wagtail` namespace, passing both `values.yaml` and your local `secrets.yaml`:
+
+```bash
+helm lint ./charts/django-app
+
+helm upgrade --install django-app ./charts/django-app \
+  -n wagtail \
+  --create-namespace \
+  -f ./charts/django-app/values.yaml \
+  -f ./charts/django-app/secrets.yaml
+```
+
+*(If updating an existing deployment after pushing a new image with the `:latest` tag, run `kubectl rollout restart deployment/django-app-django -n wagtail` to pull the updated image.)*
+
+### 6. Verify the Deployment and TLS Certificate
+
+Check that the `PersistentVolumeClaim` is `Bound`, all pods are `Running`, and the TLS `Certificate` reaches `READY: True` (takes ~1–2 minutes for the Let's Encrypt HTTP-01 challenge):
+
+```bash
+kubectl get pvc,pv,pods,svc,ingress,certificate,hpa,secret -n wagtail
+```
+
+Verify HTTPS access:
+
+```bash
+curl -I [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua)
+```
+
+### 7. Create Django/Wagtail Superuser
+
+Once both `postgres` and `django` pods reach the `1/1 Running` state (ensuring database migrations in `entrypoint.sh` have completed), create an administrative user non-interactively via environment variables:
+
+```bash
+kubectl exec deployment/django-app-django -n wagtail -- \
+  env DJANGO_SUPERUSER_USERNAME=admin \
+      DJANGO_SUPERUSER_EMAIL=admin@example.com \
+      DJANGO_SUPERUSER_PASSWORD=your_password \
+  python manage.py createsuperuser --noinput
+```
+
+*(Alternatively, run `kubectl exec -it deployment/django-app-django -n wagtail -- python manage.py createsuperuser` for interactive prompts.)*
+
+Afterward, sign in to the Wagtail admin interface at `https://django-app.dvankevich.pp.ua/admin/`.
+
+> **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
 
 ## Horizontal Pod Autoscaler (HPA) Configuration
 
@@ -244,7 +321,7 @@ Amazon EKS does not include `metrics-server` by default. Without it, `Horizontal
 Install `metrics-server` into the `kube-system` namespace:
 
 ```bash
-helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm repo add metrics-server [https://kubernetes-sigs.github.io/metrics-server/](https://kubernetes-sigs.github.io/metrics-server/)
 helm repo update
 
 helm upgrade --install metrics-server metrics-server/metrics-server \
