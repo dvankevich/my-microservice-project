@@ -284,7 +284,7 @@ kubectl get pvc,pv,pods,svc,ingress,certificate,hpa,secret -n wagtail
 Verify both L7 HTTPS access (via `ingress-nginx`) and direct L4 HTTP access (via the `LoadBalancer` service):
 
 ```bash
-curl -I [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua)
+curl -I https://django-app.dvankevich.pp.ua
 curl -I http://$(kubectl get svc django-app-django -n wagtail -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 ```
 
@@ -315,7 +315,7 @@ Amazon EKS does not include `metrics-server` by default. Without it, `Horizontal
 Install `metrics-server` into the `kube-system` namespace:
 
 ```bash
-helm repo add metrics-server [https://kubernetes-sigs.github.io/metrics-server/](https://kubernetes-sigs.github.io/metrics-server/)
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
 helm repo update
 
 helm upgrade --install metrics-server metrics-server/metrics-server \
