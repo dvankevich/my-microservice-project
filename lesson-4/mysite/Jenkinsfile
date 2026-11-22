@@ -35,7 +35,7 @@ spec:
           memory: "600Mi"
         limits:
           cpu: "1000m"
-          memory: "1100Mi"
+          memory: "1450Mi"
 """
     }
   }
@@ -63,7 +63,8 @@ spec:
               --destination="${ECR_REPO_URL}:latest" \
               --destination="${ECR_REPO_URL}:${BUILD_NUMBER}" \
               --snapshot-mode=redo \
-              --use-new-run
+              --use-new-run \
+              --compressed-caching=false
           '''
         }
       }
