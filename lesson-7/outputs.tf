@@ -57,6 +57,13 @@ output "eks_node_role_arn" {
   value       = module.eks.eks_node_role_arn
 }
 
+#-------------Cluster Addons------
+
+output "ingress_elb_hostname" {
+  description = "AWS ELB hostname для налаштування DNS CNAME (django-app та jenkins)"
+  value       = module.cluster_addons.ingress_elb_hostname
+}
+
 #-------------Jenkins-------------
 
 output "jenkins_release" {

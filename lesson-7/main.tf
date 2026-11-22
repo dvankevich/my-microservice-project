@@ -56,6 +56,16 @@ provider "helm" {
   }
 }
 
+# Підключаємо кластерні аддони (Multi-AZ ingress-nginx + cert-manager + ClusterIssuer)
+module "cluster_addons" {
+  source                = "./modules/cluster-addons"
+  ingress_replica_count = 2
+  acme_email            = "admin@dvankevich.pp.ua"
+  cluster_issuer_name   = "letsencrypt-prod"
+
+  depends_on = [module.eks]
+}
+
 # Підключаємо модуль Jenkins з IRSA та динамічною адресою ECR
 module "jenkins" {
   source             = "./modules/jenkins"
@@ -66,5 +76,8 @@ module "jenkins" {
   storage_class_name = "ebs-gp3"
   jenkins_host       = "jenkins.dvankevich.pp.ua"
 
-  depends_on = [module.eks]
+  depends_on = [
+    module.eks,
+    module.cluster_addons
+  ]
 }
