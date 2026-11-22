@@ -9,6 +9,18 @@ metadata:
     app: jenkins-kaniko-agent
 spec:
   serviceAccountName: jenkins-sa
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: statefulset.kubernetes.io/pod-name
+                  operator: In
+                  values:
+                    - jenkins-0
+            topologyKey: kubernetes.io/hostname
   containers:
     - name: kaniko
       image: gcr.io/kaniko-project/executor:v1.23.2-debug
@@ -17,6 +29,13 @@ spec:
         - sleep
       args:
         - 99d
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "600Mi"
+        limits:
+          cpu: "1000m"
+          memory: "1100Mi"
 """
     }
   }
@@ -43,7 +62,8 @@ spec:
               --dockerfile="${WORKSPACE}/lesson-4/mysite/Dockerfile" \
               --destination="${ECR_REPO_URL}:latest" \
               --destination="${ECR_REPO_URL}:${BUILD_NUMBER}" \
-              --cache=true
+              --snapshot-mode=redo \
+              --use-new-run
           '''
         }
       }
