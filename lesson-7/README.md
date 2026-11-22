@@ -1,6 +1,6 @@
 # Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster) along with a custom Helm chart to deploy the Django/Wagtail application, PostgreSQL database backed by persistent AWS EBS storage, HTTPS access via `ingress-nginx` and `cert-manager`, horizontal pod autoscaling via HPA, multi-node pod distribution via `topologySpreadConstraints`, and a declarative Jenkins CI/CD pipeline using Kaniko and IRSA.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster), cluster add-ons (`ingress-nginx` with Multi-AZ High Availability and `cert-manager` with Let's Encrypt `ClusterIssuer`), a declarative Jenkins CI/CD server using Kaniko and IRSA, and a custom Helm chart to deploy the Django/Wagtail application with PostgreSQL on persistent AWS EBS storage, dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, horizontal pod autoscaling (HPA), and `topologySpreadConstraints`.
 
 ## Project Structure
 
@@ -12,10 +12,15 @@ lesson-7/
 ├── AUTOMATED_TESTING.md       # Documentation for the automated infrastructure test script
 ├── run-tests.sh               # Automated TLS, HA, rolling update, and load testing script
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
-├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, and jenkins modules
-├── outputs.tf                 # Root outputs (S3, VPC, ECR, EKS, and Jenkins URL/release info)
+├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, and jenkins
+├── outputs.tf                 # Root outputs (S3, VPC, ECR, EKS, Ingress ELB hostname, and Jenkins info)
 ├── .terraform.lock.hcl        # Provider dependency lock file
 ├── modules/
+│   ├── cluster-addons/
+│   │   ├── main.tf            # Multi-AZ ingress-nginx, cert-manager, and letsencrypt-prod ClusterIssuer
+│   │   ├── outputs.tf         # Exports ingress_elb_hostname and cluster_issuer_name
+│   │   ├── variables.tf       # Ingress replica count, ACME email, and ClusterIssuer variables
+│   │   └── versions.tf        # Required Helm and Kubernetes provider version constraints
 │   ├── ecr/
 │   │   ├── ecr.tf
 │   │   ├── outputs.tf
@@ -46,7 +51,7 @@ lesson-7/
 └── charts/
     └── django-app/
         ├── Chart.yaml
-        ├── values.yaml            # Public application configuration (ConfigMap values, Ingress, persistence, HPA)
+        ├── values.yaml            # Public application configuration (LoadBalancer/ClusterIP switch, Ingress, persistence, HPA)
         ├── secrets.yaml.example   # Template for sensitive credentials (committed to Git)
         └── templates/
             ├── configmap.yaml     # Non-sensitive environment variables (including CSRF_TRUSTED_ORIGINS)
@@ -55,7 +60,7 @@ lesson-7/
             ├── postgres.yaml      # PostgreSQL 16 Deployment (Recreate strategy) and ClusterIP Service
             ├── pvc.yaml           # PersistentVolumeClaim (5Gi) for PostgreSQL data
             ├── storageclass.yaml  # Encrypted gp3 StorageClass (ebs.csi.aws.com, WaitForFirstConsumer)
-            ├── service.yaml       # ClusterIP Service exposing port 80 -> 8000 to Ingress
+            ├── service.yaml       # Configurable Service (LoadBalancer by default, switchable to ClusterIP)
             ├── ingress.yaml       # NGINX Ingress resource with cert-manager TLS annotations
             └── hpa.yaml           # HorizontalPodAutoscaler (2–6 replicas at >70% CPU utilization)
 ```
@@ -91,17 +96,25 @@ Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the publi
 
 - **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
 - **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 3`, `min_size = 2`, `max_size = 4`).
-  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, horizontally scaled Django pods, and the Jenkins controller with dynamic Kubernetes Kaniko agent pods without `Too many pods` scheduling errors.
+  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, horizontally scaled Django pods, and the Jenkins controller with dynamic Kubernetes Kaniko agent pods without `Too many pods` scheduling errors.
   - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
 - **EBS CSI Driver & IRSA (`ebs-csi.tf` & `outputs.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to `kube-system:ebs-csi-controller-sa`, installs the `aws-ebs-csi-driver` EKS add-on, and exports `oidc_provider_arn` and `oidc_provider_url` so downstream modules (such as `jenkins`) can configure IRSA for their own service accounts.
 - **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
+
+### `cluster-addons` (`./modules/cluster-addons`)
+
+Provisions cluster-wide ingress and TLS certificate management via the Terraform `helm` and `kubernetes` providers:
+
+- **Multi-AZ `ingress-nginx` (`main.tf`)**: Installs `ingress-nginx` with `replicaCount = 2` and `topologySpreadConstraints` keyed on `topology.kubernetes.io/zone` (`maxSkew = 1`, `whenUnsatisfiable = "ScheduleAnyway"`). Rather than deploying separate Ingress controllers per zone, running multiple replicas of a single controller spread across AWS Availability Zones eliminates single-node/single-AZ failure points while sharing a single AWS LoadBalancer.
+- **`cert-manager` & `ClusterIssuer` (`main.tf`)**: Installs `cert-manager` (`crds.enabled = true`) and provisions the production Let's Encrypt `ClusterIssuer` (`letsencrypt-prod`) using HTTP-01 challenge validation via the `nginx` ingress class.
+- **ELB Hostname Output (`outputs.tf`)**: Reads the provisioned `ingress-nginx-controller` `Service` and exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app.dvankevich.pp.ua` and `jenkins.dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
 
 ### `jenkins` (`./modules/jenkins`)
 
 Deploys Jenkins into the `jenkins` namespace using the Terraform `helm` and `kubernetes` providers authenticated via short-lived EKS IAM tokens (`data.aws_eks_cluster_auth`):
 
 - **IRSA for Kaniko ECR Builds (`jenkins.tf`)**: Creates an IAM role (`eks-cluster-demo-jenkins-kaniko-role`) with ECR push/pull permissions and binds it to the `jenkins-sa` Kubernetes `ServiceAccount` (`eks.amazonaws.com/role-arn`). Ephemeral Kaniko build pods assume this role automatically without static AWS keys or privileged Docker-in-Docker daemons.
-- **Helm Release & Ingress (`jenkins.tf` & `values.yaml`)**: Installs the official `jenkinsci/jenkins` chart as a `ClusterIP` service and exposes it externally over HTTPS (`https://jenkins.dvankevich.pp.ua`) through the existing `ingress-nginx` controller and `cert-manager` (`letsencrypt-prod`), avoiding the cost of a second AWS LoadBalancer.
+- **Helm Release & Ingress (`jenkins.tf` & `values.yaml`)**: Installs the official `jenkinsci/jenkins` chart as a `ClusterIP` service and exposes it externally over HTTPS (`https://jenkins.dvankevich.pp.ua`) through the Multi-AZ `ingress-nginx` controller and `cert-manager` (`letsencrypt-prod`), avoiding the cost of an extra AWS LoadBalancer.
 - **Persistent Storage**: Provisions a dedicated `10Gi` AWS EBS volume via the cluster's `ebs-gp3` `StorageClass` (`persistence.storageClass = "ebs-gp3"`) to persist `/var/jenkins_home` across pod restarts.
 - **Declarative JCasC & Seed Job (`values.yaml` & `secrets.yaml`)**:
   - Injects `module.ecr.repository_url` dynamically via `templatefile` as a global Jenkins environment variable (`ECR_REPO_URL`) so `Jenkinsfile` never hardcodes AWS account IDs or registry URLs.
@@ -140,7 +153,7 @@ Provision or update the infrastructure in AWS:
 terraform apply
 ```
 
-*(Note: When provisioning the cluster from scratch, deploy the core AWS resources first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks`, install `ingress-nginx`, `cert-manager`, and the `ebs-gp3` `StorageClass`, prepare `modules/jenkins/secrets.yaml`, and then run `terraform apply` to deploy the `jenkins` module.)*
+*(Note: When provisioning a brand-new cluster from scratch, `kubernetes_manifest` in `module.cluster_addons` requires the `cert-manager.io/v1` CRD to exist before planning. Deploy core AWS resources and `cert-manager` first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks -target=module.cluster_addons.helm_release.cert_manager`, apply `charts/django-app/templates/storageclass.yaml`, prepare `modules/jenkins/secrets.yaml`, and then run `terraform apply` to finish deploying `module.cluster_addons` and `module.jenkins`.)*
 
 ## Build and Push Django Docker Image to ECR (Manual Bootstrap)
 
@@ -189,7 +202,7 @@ cd ../../lesson-7
 
 ## Deploy Ingress, TLS (`cert-manager`), and Django Application to EKS
 
-The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`), provisions an encrypted `gp3` AWS EBS volume via `PersistentVolumeClaim` (`subPath: pgdata`, `Recreate` deployment strategy), and exposes the application over HTTPS via `ingress-nginx` and Let's Encrypt.
+The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`), provisions an encrypted `gp3` AWS EBS volume via `PersistentVolumeClaim` (`subPath: pgdata`, `Recreate` deployment strategy), and supports both direct L4 `LoadBalancer` access and L7 HTTPS termination via `ingress-nginx` and Let's Encrypt.
 
 ### 1. Configure `kubectl` for EKS
 
@@ -197,32 +210,28 @@ Update your local kubeconfig to connect to the `eks-cluster-demo` cluster and ve
 
 ```bash
 aws eks update-kubeconfig --region "$AWS_REGION" --name eks-cluster-demo
-kubectl get nodes
+kubectl get nodes -L topology.kubernetes.io/zone
 ```
 
-### 2. Install `ingress-nginx` and Configure DNS
+### 2. Verify `cluster-addons` and Configure DNS
 
-Install the NGINX Ingress Controller, which provisions a single AWS LoadBalancer for external HTTP/HTTPS traffic:
+Verify that the Multi-AZ `ingress-nginx-controller` pods are running across distinct Availability Zones and that `letsencrypt-prod` `ClusterIssuer` is `Ready`:
 
 ```bash
-helm repo add ingress-nginx [https://kubernetes.github.io/ingress-nginx](https://kubernetes.github.io/ingress-nginx)
-helm repo update
-
-helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-  -n ingress-nginx \
-  --create-namespace
+kubectl get pods -n ingress-nginx -o wide
+kubectl get clusterissuer
 ```
 
-Retrieve the `EXTERNAL-IP` (ELB DNS hostname) of `ingress-nginx-controller`:
+Retrieve the `ingress-nginx` AWS LoadBalancer DNS hostname from Terraform outputs:
 
 ```bash
-kubectl get svc -n ingress-nginx
+terraform output -raw ingress_elb_hostname
 ```
 
-Configure DNS for your domain (`django-app.dvankevich.pp.ua`):
+Configure DNS for your application domain (`django-app.dvankevich.pp.ua`):
 
-- **Recommended (`CNAME` record):** Point `django-app` to the `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`).
-- **Alternative (`A` record):** Resolve the ELB's current IPv4 addresses with `dig +short <EXTERNAL-IP>` and add them as `A` records.
+- **Recommended (`CNAME` record):** Point `django-app` to the `ingress_elb_hostname` (`<id>.eu-central-1.elb.amazonaws.com`).
+- **Alternative (`A` record):** Resolve the ELB's current IPv4 addresses with `dig +short <ingress_elb_hostname>` and add them as `A` records.
 
 Verify DNS propagation before issuing certificates:
 
@@ -230,46 +239,7 @@ Verify DNS propagation before issuing certificates:
 dig +short django-app.dvankevich.pp.ua
 ```
 
-### 3. Install `cert-manager` and Create Let's Encrypt `ClusterIssuer`
-
-Install `cert-manager` with CRDs enabled:
-
-```bash
-helm repo add jetstack [https://charts.jetstack.io](https://charts.jetstack.io)
-helm repo update
-
-helm upgrade --install cert-manager jetstack/cert-manager \
-  -n cert-manager \
-  --create-namespace \
-  --set crds.enabled=true
-```
-
-Once the `cert-manager` pods are `Running`, save the production ACME `ClusterIssuer` manifest to `cluster-issuer.yaml`:
-
-```yaml
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: [https://acme-v02.api.letsencrypt.org/directory](https://acme-v02.api.letsencrypt.org/directory)
-    email: admin@dvankevich.pp.ua
-    privateKeySecretRef:
-      name: letsencrypt-prod-key
-    solvers:
-      - http01:
-          ingress:
-            class: nginx
-```
-
-Apply the `ClusterIssuer` to the cluster:
-
-```bash
-kubectl apply -f cluster-issuer.yaml
-```
-
-### 4. Prepare Local Secrets File
+### 3. Prepare Local Secrets File
 
 Copy the example secrets template and populate your actual `SECRET_KEY` and `POSTGRES_PASSWORD`. All `**/secrets.yaml` files are excluded via `.gitignore` so credentials are never committed to version control:
 
@@ -278,7 +248,16 @@ cp charts/django-app/secrets.yaml.example charts/django-app/secrets.yaml
 # Edit charts/django-app/secrets.yaml with your actual credentials
 ```
 
-### 5. Validate and Install the Helm Chart
+### 4. Validate and Install the Helm Chart (`LoadBalancer` + `Ingress`)
+
+In `charts/django-app/values.yaml`, `service.type` is set to `LoadBalancer` by default to expose a direct L4 AWS ELB on port `80 -> 8000` (satisfying project compliance requirements), while `ingress.enabled: true` simultaneously routes HTTPS traffic (`https://django-app.dvankevich.pp.ua`) through the Multi-AZ `ingress-nginx` controller and `cert-manager`:
+
+```yaml
+service:
+  type: LoadBalancer # Switch: "LoadBalancer" (default) or "ClusterIP" (Ingress-only mode)
+  port: 80
+  targetPort: 8000
+```
 
 Lint the chart and deploy the release into the `wagtail` namespace, passing both `values.yaml` and your local `secrets.yaml`:
 
@@ -292,23 +271,24 @@ helm upgrade --install django-app ./charts/django-app \
   -f ./charts/django-app/secrets.yaml
 ```
 
-*(If updating an existing deployment after pushing a new image with the `:latest` tag, run `kubectl rollout restart deployment/django-app-django -n wagtail` to pull the updated image.)*
+*(To deploy without creating a separate application ELB and route traffic solely through `ingress-nginx`, override the switch with `--set service.type=ClusterIP`. If updating an existing deployment after pushing a new image with the `:latest` tag, run `kubectl rollout restart deployment/django-app-django -n wagtail`.)*
 
-### 6. Verify the Deployment and TLS Certificate
+### 5. Verify the Deployment, LoadBalancer, and TLS Certificate
 
-Check that the `PersistentVolumeClaim` is `Bound`, all pods are `Running`, and the TLS `Certificate` reaches `READY: True` (takes ~1–2 minutes for the Let's Encrypt HTTP-01 challenge):
+Check that the `PersistentVolumeClaim` is `Bound`, all pods are `Running`, `django-app-django` has an `EXTERNAL-IP` LoadBalancer, and the TLS `Certificate` reaches `READY: True` (takes ~1–2 minutes for the Let's Encrypt HTTP-01 challenge):
 
 ```bash
 kubectl get pvc,pv,pods,svc,ingress,certificate,hpa,secret -n wagtail
 ```
 
-Verify HTTPS access:
+Verify both L7 HTTPS access (via `ingress-nginx`) and direct L4 HTTP access (via the `LoadBalancer` service):
 
 ```bash
 curl -I [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua)
+curl -I http://$(kubectl get svc django-app-django -n wagtail -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 ```
 
-### 7. Create Django/Wagtail Superuser
+### 6. Create Django/Wagtail Superuser
 
 Once both `postgres` and `django` pods reach the `1/1 Running` state (ensuring database migrations in `entrypoint.sh` have completed), create an administrative user non-interactively via environment variables:
 
@@ -389,7 +369,7 @@ kubectl get hpa,pods -n wagtail
 
 By default, the Kubernetes scheduler places new pods based solely on available node resources. During pod recreation (self-healing) or HPA scale-out events, multiple Django replicas can end up scheduled on the same worker node, reducing fault tolerance if that node or Availability Zone fails.
 
-To prevent single-node concentration, `charts/django-app/templates/deployment.yaml` defines `topologySpreadConstraints`:
+To prevent single-node concentration, both the Ingress layer (`modules/cluster-addons/main.tf`, spreading `ingress-nginx-controller` across `topology.kubernetes.io/zone`) and the application layer (`charts/django-app/templates/deployment.yaml`) enforce `topologySpreadConstraints`:
 
 ```yaml
 topologySpreadConstraints:
@@ -402,13 +382,14 @@ topologySpreadConstraints:
 ```
 
 - **`maxSkew: 1`:** Limits the difference in Django pod counts between any two worker nodes to at most `1` (distributing pods as `1 + 1` at 2 replicas, `2 + 2` at 4 replicas, and `3 + 3` at 6 replicas).
-- **`topologyKey: kubernetes.io/hostname`:** Spreads pods evenly across distinct EKS worker nodes. Because the node group spans multiple public subnets (`eu-central-1a` and `eu-central-1b`), this also provides Multi-AZ resilience.
+- **`topologyKey: kubernetes.io/hostname`:** Spreads pods evenly across distinct EKS worker nodes. Because the node group spans multiple public subnets (`eu-central-1a`, `eu-central-1b`, `eu-central-1c`), this also provides Multi-AZ resilience.
 - **`whenUnsatisfiable: ScheduleAnyway`:** Applies a soft scheduling constraint so pods are evenly balanced during normal operation and self-healing, while still allowing replicas to run on a single surviving node if another node becomes unavailable.
 
-Verify that Django replicas are scheduled across distinct nodes:
+Verify that Django and Ingress replicas are scheduled across distinct nodes and Availability Zones:
 
 ```bash
 kubectl get pods -n wagtail -o wide
+kubectl get pods -n ingress-nginx -o wide
 ```
 
 ## Deploy Jenkins CI/CD Server & Kaniko ECR Pipeline
@@ -417,21 +398,16 @@ Jenkins is provisioned via `./modules/jenkins`, integrating IRSA for passwordles
 
 ### 1. Configure DNS for Jenkins
 
-Retrieve the `EXTERNAL-IP` (ELB DNS hostname) of `ingress-nginx-controller`:
+In your DNS provider for `dvankevich.pp.ua`, create a `CNAME` record for `jenkins` pointing to the same `ingress_elb_hostname` (`<id>.eu-central-1.elb.amazonaws.com`) used by `django-app`:
 
 ```bash
-kubectl get svc -n ingress-nginx
-```
-
-In your DNS provider for `dvankevich.pp.ua`, create a `CNAME` record for `jenkins` pointing to the same `EXTERNAL-IP` ELB hostname (`<id>.eu-central-1.elb.amazonaws.com`) used by `django-app`. Verify DNS propagation:
-
-```bash
+terraform output -raw ingress_elb_hostname
 dig +short jenkins.dvankevich.pp.ua
 ```
 
 ### 2. Ensure Sufficient Cluster Capacity (3 Nodes)
 
-If upgrading an existing 2-node cluster, ensure `desired_size = 3` and `max_size = 4` are set in `main.tf` and scale the active node count via AWS CLI so there are enough pod slots and memory for the Jenkins controller and dynamic Kaniko agent pods alongside Django and PostgreSQL:
+If upgrading an existing 2-node cluster, ensure `desired_size = 3` and `max_size = 4` are set in `main.tf` and scale the active node count via AWS CLI so there are enough pod slots and memory for the Jenkins controller and dynamic Kaniko agent pods alongside Django, PostgreSQL, and Multi-AZ `ingress-nginx`:
 
 ```bash
 terraform apply -target=module.eks
@@ -487,30 +463,28 @@ kubectl get pvc,pv,pods,svc,ingress,certificate -n jenkins
 
 1. Open `https://jenkins.dvankevich.pp.ua` in your browser and sign in as `admin`.
 2. Open **`seed-job`** and click **Build Now** (if prompted for script approval, approve it under *Manage Jenkins → In-process Script Approval* and re-run `seed-job`).
-3. Return to the dashboard, open the newly generated **`django-wagtail-ci`** pipeline, and click **Build Now**. Jenkins will spawn an ephemeral Kubernetes pod with `serviceAccountName: jenkins-sa`, build `lesson-4/mysite/Dockerfile` via Kaniko, and push the resulting image (`:latest` and `:<BUILD_NUMBER>`) to Amazon ECR.
+3. Return to the dashboard, open the newly generated **`django-wagtail-ci`** pipeline, and click **Build Now**. Jenkins will spawn an ephemeral Kubernetes pod with `serviceAccountName: jenkins-sa` (scheduled away from `jenkins-0` via `podAntiAffinity` and optimized with `--snapshot-mode=redo --use-new-run` to stay within `t3.small` memory limits), build `lesson-4/mysite/Dockerfile` via Kaniko, and push the resulting image (`:latest` and `:<BUILD_NUMBER>`) to Amazon ECR.
 4. Verify the pushed image tags in ECR:
 
 ```bash
 aws ecr describe-images \
   --repository-name lesson-5-ecr \
   --region eu-central-1 \
-  --query 'imageDetails[*].{Tags:imageTags,PushedAt:imagePushedAt}' \
+  --query 'sort_by(imageDetails,& imagePushedAt)[*].{Tags:imageTags,PushedAt:imagePushedAt}' \
   --output table
 ```
 
 ## Cleanup
 
-Remove the Jenkins module and its `PersistentVolumeClaim` first so Terraform can cleanly destroy the release and AWS deletes the underlying EBS volume, then uninstall the remaining Helm releases and tear down the Terraform-managed infrastructure:
+Remove the `django-app` Helm release (which also deletes the `django-app-django` AWS LoadBalancer) and `metrics-server` first, then destroy the Terraform-managed `jenkins` module and its EBS `PersistentVolumeClaim`, and finally run `terraform destroy` to clean up `cluster_addons` (including the `ingress-nginx` ELB), EKS, ECR, and VPC:
 
 ```bash
-terraform destroy -target=module.jenkins
-kubectl delete pvc -n jenkins --all
-
 helm uninstall django-app -n wagtail
 kubectl delete pvc django-app-postgres-pvc -n wagtail
-helm uninstall cert-manager -n cert-manager
-helm uninstall ingress-nginx -n ingress-nginx
 helm uninstall metrics-server -n kube-system
+
+terraform destroy -target=module.jenkins
+kubectl delete pvc -n jenkins --all
 
 terraform destroy
 ```
