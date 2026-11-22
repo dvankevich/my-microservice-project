@@ -35,6 +35,11 @@ controller:
 
   JCasC:
     configScripts:
+      security-settings: |
+        security:
+          globalJobDslSecurityConfiguration:
+            useScriptSecurity: false
+
       global-env: |
         jenkins:
           globalNodeProperties:
