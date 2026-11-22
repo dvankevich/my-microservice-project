@@ -3,6 +3,21 @@ variable "cluster_name" {
   type        = string
 }
 
+variable "oidc_provider_arn" {
+  description = "ARN OIDC-провайдера EKS для IRSA"
+  type        = string
+}
+
+variable "oidc_provider_url" {
+  description = "URL OIDC-провайдера EKS для IRSA"
+  type        = string
+}
+
+variable "ecr_repository_url" {
+  description = "Повний URL репозиторію Amazon ECR (передається в Jenkins як змінна ECR_REPO_URL)"
+  type        = string
+}
+
 variable "namespace" {
   description = "Kubernetes namespace для Jenkins"
   type        = string
@@ -25,16 +40,4 @@ variable "jenkins_host" {
   description = "Доменне ім'я для доступу до Jenkins через Ingress"
   type        = string
   default     = "jenkins.dvankevich.pp.ua"
-}
-
-variable "admin_username" {
-  description = "Логін адміністратора Jenkins"
-  type        = string
-  default     = "admin"
-}
-
-variable "admin_password" {
-  description = "Пароль адміністратора Jenkins"
-  type        = string
-  sensitive   = true
 }
