@@ -25,7 +25,8 @@ override.tf.json
 #
 # !example_override.tf
 
-# Helm secrets
-charts/**/secrets.yaml
-!charts/**/secrets.yaml.example
+# Helm & Terraform secrets
+**/secrets.yaml
+!**/secrets.yaml.example
+
 

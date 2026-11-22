@@ -1,0 +1,89 @@
+controller:
+  serviceType: ClusterIP
+  servicePort: 8080
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+  serviceAccount:
+    name: "jenkins-sa"
+    create: false
+
+  installPlugins:
+    - kubernetes
+    - workflow-aggregator
+    - git
+    - configuration-as-code
+    - credentials-binding
+    - github
+    - job-dsl
+
+  ingress:
+    enabled: true
+    ingressClassName: "nginx"
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    tls:
+      - secretName: "jenkins-tls"
+        hosts:
+          - "jenkins.dvankevich.pp.ua"
+
+  JCasC:
+    configScripts:
+      global-env: |
+        jenkins:
+          globalNodeProperties:
+            - envVars:
+                env:
+                  - key: "ECR_REPO_URL"
+                    value: "${ecr_repository_url}"
+
+      seed-job: |
+        jobs:
+          - script: >
+              job('seed-job') {
+                description('Job to generate CI pipeline for Django/Wagtail project')
+                scm {
+                  git {
+                    remote {
+                      url('https://github.com/dvankevich/my-microservice-project.git')
+                      credentials('github-token')
+                    }
+                    branches('*/main')
+                  }
+                }
+                steps {
+                  dsl {
+                    text('''
+                      pipelineJob("django-wagtail-ci") {
+                        description("Build and push Django/Wagtail Docker image to Amazon ECR")
+                        definition {
+                          cpsScm {
+                            scm {
+                              git {
+                                remote {
+                                  url("https://github.com/dvankevich/my-microservice-project.git")
+                                  credentials("github-token")
+                                }
+                                branches("*/main")
+                              }
+                            }
+                            scriptPath("lesson-4/mysite/Jenkinsfile")
+                            lightweight(true)
+                          }
+                        }
+                      }
+                    ''')
+                  }
+                }
+              }
+
+persistence:
+  enabled: true
+  accessMode: "ReadWriteOnce"
+  size: "10Gi"

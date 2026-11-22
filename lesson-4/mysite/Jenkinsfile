@@ -1,0 +1,52 @@
+pipeline {
+  agent {
+    kubernetes {
+      yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: jenkins-kaniko-agent
+spec:
+  serviceAccountName: jenkins-sa
+  containers:
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:v1.23.2-debug
+      imagePullPolicy: IfNotPresent
+      command:
+        - sleep
+      args:
+        - 99d
+"""
+    }
+  }
+
+  stages {
+    stage('Verify Environment') {
+      steps {
+        script {
+          if (!env.ECR_REPO_URL) {
+            error("Змінна середовища ECR_REPO_URL не задана в налаштуваннях Jenkins (JCasC)!")
+          }
+          echo "Target ECR Repository: ${env.ECR_REPO_URL}"
+          echo "Image Tags: latest, ${env.BUILD_NUMBER}"
+        }
+      }
+    }
+
+    stage('Build & Push Docker Image to ECR') {
+      steps {
+        container('kaniko') {
+          sh '''
+            /kaniko/executor \
+              --context="${WORKSPACE}/lesson-4/mysite" \
+              --dockerfile="${WORKSPACE}/lesson-4/mysite/Dockerfile" \
+              --destination="${ECR_REPO_URL}:latest" \
+              --destination="${ECR_REPO_URL}:${BUILD_NUMBER}" \
+              --cache=true
+          '''
+        }
+      }
+    }
+  }
+}
