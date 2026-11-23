@@ -80,3 +80,15 @@ output "jenkins_url" {
   description = "URL веб-інтерфейсу Jenkins"
   value       = module.jenkins.jenkins_url
 }
+
+#-------------Argo CD-------------
+
+output "argocd_url" {
+  description = "HTTPS URL веб-інтерфейсу Argo CD"
+  value       = module.argo_cd.argocd_url
+}
+
+output "argocd_admin_password_command" {
+  description = "Команда для отримання пароля адміністратора Argo CD"
+  value       = module.argo_cd.admin_password_command
+}
