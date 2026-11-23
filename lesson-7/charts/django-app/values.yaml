@@ -63,6 +63,7 @@ env:
   POSTGRES_PORT: "5432"
 
 # Чутливі дані (підуть у Secret, реальні значення передаємо при деплої)
+createSecrets: true
 secrets:
   SECRET_KEY: ""
   POSTGRES_PASSWORD: ""

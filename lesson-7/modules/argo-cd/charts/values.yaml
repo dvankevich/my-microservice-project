@@ -1,0 +1,24 @@
+applications:
+  - name: django-app
+    project: default
+    source:
+      repoURL: https://github.com/dvankevich/my-microservice-project.git
+      path: lesson-7/charts/django-app
+      targetRevision: main
+      helm:
+        valueFiles:
+          - values.yaml
+        parameters:
+          - name: createSecrets
+            value: "false"
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: wagtail
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      syncOptions:
+        - CreateNamespace=true
+
+repositories: []

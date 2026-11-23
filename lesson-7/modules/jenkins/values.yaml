@@ -67,6 +67,9 @@ controller:
                     text('''
                       pipelineJob("django-wagtail-ci") {
                         description("Build and push Django/Wagtail Docker image to Amazon ECR")
+                        triggers {
+                          githubPush()
+                        }
                         definition {
                           cpsScm {
                             scm {

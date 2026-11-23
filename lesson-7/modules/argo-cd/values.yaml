@@ -1,0 +1,56 @@
+configs:
+  params:
+    server.insecure: true # TLS термінується на ingress-nginx, тому бекенд Argo CD працює по HTTP
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+server:
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hostname: argocd.dvankevich.pp.ua
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    tls: true
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Вимикаємо опціональні компоненти для економії слотів подів на t3.small
+dex:
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  enabled: false

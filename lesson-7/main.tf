@@ -81,3 +81,15 @@ module "jenkins" {
     module.cluster_addons
   ]
 }
+
+# Підключаємо модуль Argo CD (GitOps CD)
+module "argo_cd" {
+  source      = "./modules/argo-cd"
+  namespace   = "argocd"
+  argocd_host = "argocd.dvankevich.pp.ua"
+
+  depends_on = [
+    module.eks,
+    module.cluster_addons
+  ]
+}
