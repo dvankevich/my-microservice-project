@@ -335,7 +335,7 @@ Amazon EKS does not include `metrics-server` by default. Without it, `Horizontal
 Install `metrics-server` into the `kube-system` namespace:
 
 ```bash
-helm repo add metrics-server [https://kubernetes-sigs.github.io/metrics-server/](https://kubernetes-sigs.github.io/metrics-server/)
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
 helm repo update
 
 helm upgrade --install metrics-server metrics-server/metrics-server \
@@ -482,15 +482,6 @@ kubectl get pvc,pv,pods,svc,ingress,certificate -n jenkins
 1. Open `https://jenkins.dvankevich.pp.ua` in your browser and sign in as `admin`.
 2. Open **`seed-job`** and click **Build Now** to generate the **`django-wagtail-ci`** pipeline with the GitHub push trigger enabled.
 3. Open **`django-wagtail-ci`** and click **Build Now**. Jenkins spawns an ephemeral Kubernetes pod (`jnlp` + `kaniko` + `git`, scheduled away from `jenkins-0` via `podAntiAffinity`, tuned to `510Mi` total `requests.memory` to fit `t3.small` nodes, and running Kaniko with `--snapshot-mode=redo --use-new-run --compressed-caching=false` under a `1450Mi` memory limit), builds `lesson-4/mysite/Dockerfile`, pushes `:latest` and `:<BUILD_NUMBER>` to Amazon ECR, and commits the updated `image.tag` to `lesson-7/charts/django-app/values.yaml` with `[skip ci]`.
-4. Verify the pushed image tags in ECR:
-
-```bash
-aws ecr describe-images \
-  --repository-name lesson-5-ecr \
-  --region eu-central-1 \
-  --query 'sort_by(imageDetails,& imagePushedAt)[*].{Tags:imageTags,PushedAt:imagePushedAt}' \
-  --output table
-```
 
 ## Deploy Argo CD & End-to-End GitOps CI/CD Pipeline
 
@@ -549,19 +540,72 @@ In GitHub (`dvankevich/my-microservice-project` → **Settings → Webhooks → 
 - **Secret:** *(leave blank)*
 - **Events:** `Just the push event`
 
-### 6. Verify the Full GitOps Loop
+### 6. End-to-End GitOps Flow Overview
 
 1. Push an application change in `lesson-4/mysite/` to `main`.
 2. GitHub triggers `django-wagtail-ci` in Jenkins via the webhook.
 3. Kaniko builds the Docker image and pushes `:<BUILD_NUMBER>` and `:latest` to ECR.
-4. The `git` sidecar updates `image.tag` in `lesson-7/charts/django-app/values.yaml` and pushes a commit containing `[skip ci]` (which causes the subsequent webhook-triggered Jenkins run to exit early with `NOT_BUILT`, preventing an infinite build loop).
+4. The `git` sidecar updates `image.tag` in `lesson-7/charts/django-app/values.yaml` and pushes a commit containing `[skip ci]`.
 5. Argo CD detects the updated `values.yaml` in Git (within 3 minutes or immediately via **Refresh**) and executes a zero-downtime rolling update of `django-app-django` in `wagtail`.
 
-Verify the live container image tag running in EKS:
+## How to Verify the Jenkins Job
+
+### 1. Verify GitHub Webhook Delivery
+
+1. Open your repository on GitHub (`dvankevich/my-microservice-project`) and navigate to **Settings → Webhooks**.
+2. Click on `https://jenkins.dvankevich.pp.ua/github-webhook/` and open the **Recent Deliveries** tab.
+3. Confirm that the latest `push` delivery has a green checkmark and an HTTP **`200`** response.
+
+### 2. Inspect Build History and Console Output in Jenkins
+
+1. Open `https://jenkins.dvankevich.pp.ua` and select the **`django-wagtail-ci`** job.
+2. Check **GitHub Hook Log** in the left sidebar to confirm Jenkins received the webhook event for `refs/heads/main`.
+3. Open the triggered build (`#<BUILD_NUMBER>`) and click **Console Output** to verify each stage:
+   - **Pod Provisioning:** Jenkins creates an ephemeral `jenkins-kaniko-agent` pod (`jnlp`, `kaniko`, and `git` containers) scheduled on a separate node from `jenkins-0`.
+   - **`Verify Environment`:** Prints `Target ECR Repository` and `Image Tags: latest, <BUILD_NUMBER>`. *(Note: The follow-up build triggered automatically by Jenkins' own tag-update commit detects `[skip ci]` in the commit message and exits cleanly with `Finished: NOT_BUILT` to prevent an infinite build loop.)*
+   - **`Build & Push Docker Image to ECR`:** Kaniko builds `lesson-4/mysite/Dockerfile` and pushes both `:<BUILD_NUMBER>` and `:latest` to ECR.
+   - **`Update Chart Tag in Git`:** The `git` container updates `tag: "<BUILD_NUMBER>"` in `lesson-7/charts/django-app/values.yaml` and pushes `chore(cd): update django-app image tag to <BUILD_NUMBER> [skip ci]` to `main`.
+
+### 3. Verify Pushed Image Tags in Amazon ECR
+
+Confirm via AWS CLI that the new build tag exists in your ECR repository:
 
 ```bash
-kubectl get deploy django-app-django -n wagtail \
-  -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
+aws ecr describe-images \
+  --repository-name lesson-5-ecr \
+  --region eu-central-1 \
+  --query 'sort_by(imageDetails,& imagePushedAt)[*].{Tags:imageTags,PushedAt:imagePushedAt}' \
+  --output table
+```
+
+## How to View the Result in Argo CD
+
+### 1. Check Application Sync and Health Status in the Argo CD UI
+
+1. Open `https://argocd.dvankevich.pp.ua` and sign in as `admin`.
+2. On the **Applications** dashboard, click on the **`django-app`** card.
+3. Verify the status indicators at the top of the application view:
+   - **App Health:** **`Healthy`** (all pods, services, ingress, certificate, and HPA are operational).
+   - **Current Sync Status:** **`Synced`** to `main` (displays the short Git commit SHA and commit message `chore(cd): update django-app image tag to <BUILD_NUMBER> [skip ci]`).
+   - *(Optional)* Click **Refresh** to trigger an immediate Git poll instead of waiting for the default 3-minute polling interval.
+
+### 2. Inspect the Resource Tree, ReplicaSets, and Running Image Tag
+
+1. In the **`django-app`** resource view (Tree or List view), locate **`Deployment` (`django-app-django`)**:
+   - During a rollout, Argo CD displays the newly created **`ReplicaSet`** scaling up to `2` healthy **`Pod`** replicas (`django-app-django-<new-hash>-...`) while the previous `ReplicaSet` scales down to `0` pods.
+   - Older `ReplicaSet` objects remain visible with `0` pods (up to Kubernetes' default `revisionHistoryLimit: 10`) so instant rollbacks are possible without rebuilding images.
+2. Click on one of the active **`django-app-django-...` Pod** nodes and open the **Summary** or **Live Manifest** tab to verify that `spec.containers[0].image` matches `<account_id>.dkr.ecr.eu-central-1.amazonaws.com/lesson-5-ecr:<BUILD_NUMBER>`.
+3. Click **History and Rollback** in the top menu to inspect the chronological audit log of every Git commit synced by Argo CD.
+
+### 3. Verify via `kubectl` and Live HTTPS Endpoint
+
+Confirm from the CLI that the running `Deployment` uses the exact tag built by Jenkins and that the application responds over HTTPS:
+
+```bash
+kubectl get application django-app -n argocd
+kubectl get deploy django-app-django -n wagtail -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
+kubectl get rs,pods -n wagtail
+curl -I https://django-app.dvankevich.pp.ua
 ```
 
 ## Cleanup
