@@ -1,21 +1,33 @@
 # Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster), cluster add-ons (`ingress-nginx` with Multi-AZ High Availability and `cert-manager` with Let's Encrypt `ClusterIssuer`), a declarative Jenkins CI/CD server using Kaniko and IRSA, and a custom Helm chart to deploy the Django/Wagtail application with PostgreSQL on persistent AWS EBS storage, dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, horizontal pod autoscaling (HPA), and `topologySpreadConstraints`.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster), cluster add-ons (`ingress-nginx` with Multi-AZ High Availability and `cert-manager` with Let's Encrypt `ClusterIssuer`), a declarative Jenkins CI/CD server using Kaniko and IRSA, an Argo CD GitOps continuous delivery engine, and a custom Helm chart to deploy the Django/Wagtail application with PostgreSQL on persistent AWS EBS storage, dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, horizontal pod autoscaling (HPA), and `topologySpreadConstraints`.
 
 ## Project Structure
 
 ```text
 lesson-7/
 ├── .gitignore                 # Ignores Terraform state/cache and local secrets.yaml files
-├── README.md                  # Infrastructure, deployment, and CI/CD documentation
+├── README.md                  # Infrastructure, deployment, and GitOps CI/CD documentation
 ├── LOAD_TESTING.md            # Load testing guide and HPA scaling verification scenarios
 ├── AUTOMATED_TESTING.md       # Documentation for the automated infrastructure test script
 ├── run-tests.sh               # Automated TLS, HA, rolling update, and load testing script
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
-├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, and jenkins
-├── outputs.tf                 # Root outputs (S3, VPC, ECR, EKS, Ingress ELB hostname, and Jenkins info)
+├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, jenkins, and argo_cd
+├── outputs.tf                 # Root outputs (S3, VPC, ECR, EKS, Ingress ELB hostname, Jenkins, and Argo CD info)
 ├── .terraform.lock.hcl        # Provider dependency lock file
 ├── modules/
+│   ├── argo-cd/
+│   │   ├── argo_cd.tf         # Helm releases for Argo CD controller/server and declarative argo-apps chart
+│   │   ├── outputs.tf         # Outputs Argo CD HTTPS URL and initial admin password command
+│   │   ├── values.yaml        # Argo CD server configuration (Ingress TLS, server.insecure, resource limits)
+│   │   ├── variables.tf       # Release name, namespace, chart version, and hostname variables
+│   │   ├── versions.tf        # Required Helm and Kubernetes provider version constraints
+│   │   └── charts/
+│   │       ├── Chart.yaml     # Local Helm chart metadata for Argo CD Applications and Repositories
+│   │       ├── values.yaml    # Declarative Application definition (django-app) with createSecrets=false
+│   │       └── templates/
+│   │           ├── application.yaml # Argo CD Application CRD template
+│   │           └── repository.yaml  # Argo CD Git repository Secret template
 │   ├── cluster-addons/
 │   │   ├── main.tf            # Multi-AZ ingress-nginx, cert-manager, and letsencrypt-prod ClusterIssuer
 │   │   ├── outputs.tf         # Exports ingress_elb_hostname and cluster_issuer_name
@@ -51,11 +63,11 @@ lesson-7/
 └── charts/
     └── django-app/
         ├── Chart.yaml
-        ├── values.yaml            # Public application configuration (LoadBalancer/ClusterIP switch, Ingress, persistence, HPA)
+        ├── values.yaml            # Public application configuration (image tag, LoadBalancer/ClusterIP, Ingress, HPA)
         ├── secrets.yaml.example   # Template for sensitive credentials (committed to Git)
         └── templates/
             ├── configmap.yaml     # Non-sensitive environment variables (including CSRF_TRUSTED_ORIGINS)
-            ├── secret.yaml        # Kubernetes Secret for SECRET_KEY and POSTGRES_PASSWORD
+            ├── secret.yaml        # Conditional Kubernetes Secret (controlled via createSecrets flag)
             ├── deployment.yaml    # Django/Wagtail Deployment with PostgreSQL readiness initContainer and topologySpreadConstraints
             ├── postgres.yaml      # PostgreSQL 16 Deployment (Recreate strategy) and ClusterIP Service
             ├── pvc.yaml           # PersistentVolumeClaim (5Gi) for PostgreSQL data
@@ -65,7 +77,7 @@ lesson-7/
             └── hpa.yaml           # HorizontalPodAutoscaler (2–6 replicas at >70% CPU utilization)
 ```
 
-*(Note: The declarative CI pipeline definition for building the Django Docker image resides in the application directory at `../lesson-4/mysite/Jenkinsfile`.)*
+*(Note: The declarative CI/CD pipeline definition for building the Django Docker image and updating `charts/django-app/values.yaml` resides in the application directory at `../lesson-4/mysite/Jenkinsfile`.)*
 
 ## Modules Overview
 
@@ -96,7 +108,7 @@ Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the publi
 
 - **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
 - **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 3`, `min_size = 2`, `max_size = 4`).
-  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, horizontally scaled Django pods, and the Jenkins controller with dynamic Kubernetes Kaniko agent pods without `Too many pods` scheduling errors.
+  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, horizontally scaled Django pods, Argo CD, and the Jenkins controller with dynamic Kubernetes Kaniko agent pods without `Too many pods` scheduling errors.
   - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
 - **EBS CSI Driver & IRSA (`ebs-csi.tf` & `outputs.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to `kube-system:ebs-csi-controller-sa`, installs the `aws-ebs-csi-driver` EKS add-on, and exports `oidc_provider_arn` and `oidc_provider_url` so downstream modules (such as `jenkins`) can configure IRSA for their own service accounts.
 - **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
@@ -107,7 +119,7 @@ Provisions cluster-wide ingress and TLS certificate management via the Terraform
 
 - **Multi-AZ `ingress-nginx` (`main.tf`)**: Installs `ingress-nginx` with `replicaCount = 2` and `topologySpreadConstraints` keyed on `topology.kubernetes.io/zone` (`maxSkew = 1`, `whenUnsatisfiable = "ScheduleAnyway"`). Rather than deploying separate Ingress controllers per zone, running multiple replicas of a single controller spread across AWS Availability Zones eliminates single-node/single-AZ failure points while sharing a single AWS LoadBalancer.
 - **`cert-manager` & `ClusterIssuer` (`main.tf`)**: Installs `cert-manager` (`crds.enabled = true`) and provisions the production Let's Encrypt `ClusterIssuer` (`letsencrypt-prod`) using HTTP-01 challenge validation via the `nginx` ingress class.
-- **ELB Hostname Output (`outputs.tf`)**: Reads the provisioned `ingress-nginx-controller` `Service` and exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app.dvankevich.pp.ua` and `jenkins.dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
+- **ELB Hostname Output (`outputs.tf`)**: Reads the provisioned `ingress-nginx-controller` `Service` and exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app.dvankevich.pp.ua`, `jenkins.dvankevich.pp.ua`, and `argocd.dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
 
 ### `jenkins` (`./modules/jenkins`)
 
@@ -119,7 +131,15 @@ Deploys Jenkins into the `jenkins` namespace using the Terraform `helm` and `kub
 - **Declarative JCasC & Seed Job (`values.yaml` & `secrets.yaml`)**:
   - Injects `module.ecr.repository_url` dynamically via `templatefile` as a global Jenkins environment variable (`ECR_REPO_URL`) so `Jenkinsfile` never hardcodes AWS account IDs or registry URLs.
   - Loads the Jenkins admin password and GitHub Fine-grained Personal Access Token (`github-token`) from the gitignored `modules/jenkins/secrets.yaml` file.
-  - Automatically configures `seed-job` using the `job-dsl` plugin to generate the `django-wagtail-ci` pipeline targeting `https://github.com/dvankevich/my-microservice-project.git` (`lesson-4/mysite/Jenkinsfile`).
+  - Automatically configures `seed-job` using the `job-dsl` plugin to generate the `django-wagtail-ci` pipeline with `triggers { githubPush() }` targeting `https://github.com/dvankevich/my-microservice-project.git` (`lesson-4/mysite/Jenkinsfile`).
+
+### `argo-cd` (`./modules/argo-cd`)
+
+Deploys Argo CD into the `argocd` namespace as the GitOps Continuous Delivery engine:
+
+- **Core Argo CD Release (`argo_cd.tf` & `values.yaml`)**: Installs the official `argoproj/argo-cd` Helm chart as a `ClusterIP` service behind the shared Multi-AZ `ingress-nginx` controller and `cert-manager` (`https://argocd.dvankevich.pp.ua`). Sets `configs.params.server.insecure: true` so TLS terminates cleanly at `ingress-nginx` without HTTP-to-HTTPS redirect loops, and disables optional components (`dex`, `notifications`, `applicationSet`) to conserve pod slots on `t3.small` nodes.
+- **Declarative Applications Chart (`argo_cd.tf` & `charts/`)**: Deploys a local `argo-apps` Helm release (`depends_on = [helm_release.argo_cd]`) that provisions the `django-app` `Application` custom resource watching `lesson-7/charts/django-app` on `main` with automated `prune: true` and `selfHeal: true`.
+- **Secret Isolation (`createSecrets=false`)**: Passes `--set createSecrets=false` in the Argo CD `Application` definition so Argo CD manages all application workloads (`Deployment`, `Service`, `ConfigMap`, `Ingress`, `HPA`, `Postgres`) from Git without overwriting or deleting the pre-provisioned `django-app-secret` in the `wagtail` namespace.
 
 ## Usage
 
@@ -153,7 +173,7 @@ Provision or update the infrastructure in AWS:
 terraform apply
 ```
 
-*(Note: When provisioning a brand-new cluster from scratch, `kubernetes_manifest` in `module.cluster_addons` requires the `cert-manager.io/v1` CRD to exist before planning. Deploy core AWS resources and `cert-manager` first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks -target=module.cluster_addons.helm_release.cert_manager`, apply `charts/django-app/templates/storageclass.yaml`, prepare `modules/jenkins/secrets.yaml`, and then run `terraform apply` to finish deploying `module.cluster_addons` and `module.jenkins`.)*
+*(Note: When provisioning a brand-new cluster from scratch, `kubernetes_manifest` in `module.cluster_addons` requires the `cert-manager.io/v1` CRD to exist before planning. Deploy core AWS resources and `cert-manager` first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks -target=module.cluster_addons.helm_release.cert_manager`, apply `charts/django-app/templates/storageclass.yaml`, prepare `modules/jenkins/secrets.yaml`, and then run `terraform apply` to finish deploying `module.cluster_addons`, `module.jenkins`, and `module.argo_cd`.)*
 
 ## Build and Push Django Docker Image to ECR (Manual Bootstrap)
 
@@ -198,7 +218,7 @@ aws ecr list-images --repository-name "$ECR_REPO_NAME" --region "$AWS_REGION"
 cd ../../lesson-7
 ```
 
-*(Once Jenkins is deployed, subsequent image builds and ECR pushes are automated through the `django-wagtail-ci` Kaniko pipeline.)*
+*(Once Jenkins and Argo CD are deployed, subsequent image builds, ECR pushes, and Helm tag updates are automated through the `django-wagtail-ci` Kaniko pipeline.)*
 
 ## Deploy Ingress, TLS (`cert-manager`), and Django Application to EKS
 
@@ -271,7 +291,7 @@ helm upgrade --install django-app ./charts/django-app \
   -f ./charts/django-app/secrets.yaml
 ```
 
-*(To deploy without creating a separate application ELB and route traffic solely through `ingress-nginx`, override the switch with `--set service.type=ClusterIP`. If updating an existing deployment after pushing a new image with the `:latest` tag, run `kubectl rollout restart deployment/django-app-django -n wagtail`.)*
+*(To deploy without creating a separate application ELB and route traffic solely through `ingress-nginx`, override the switch with `--set service.type=ClusterIP`. If updating an existing deployment manually after pushing a new image with the `:latest` tag, run `kubectl rollout restart deployment/django-app-django -n wagtail`.)*
 
 ### 5. Verify the Deployment, LoadBalancer, and TLS Certificate
 
@@ -315,7 +335,7 @@ Amazon EKS does not include `metrics-server` by default. Without it, `Horizontal
 Install `metrics-server` into the `kube-system` namespace:
 
 ```bash
-helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm repo add metrics-server [https://kubernetes-sigs.github.io/metrics-server/](https://kubernetes-sigs.github.io/metrics-server/)
 helm repo update
 
 helm upgrade --install metrics-server metrics-server/metrics-server \
@@ -394,7 +414,7 @@ kubectl get pods -n ingress-nginx -o wide
 
 ## Deploy Jenkins CI/CD Server & Kaniko ECR Pipeline
 
-Jenkins is provisioned via `./modules/jenkins`, integrating IRSA for passwordless ECR image pushes, JCasC for declarative credentials and job generation, and Kubernetes pod agents running Kaniko.
+Jenkins is provisioned via `./modules/jenkins`, integrating IRSA for passwordless ECR image pushes, JCasC for declarative credentials and job generation, and Kubernetes pod agents running Kaniko and Git.
 
 ### 1. Configure DNS for Jenkins
 
@@ -407,11 +427,9 @@ dig +short jenkins.dvankevich.pp.ua
 
 ### 2. Ensure Sufficient Cluster Capacity (3 Nodes)
 
-If upgrading an existing 2-node cluster, ensure `desired_size = 3` and `max_size = 4` are set in `main.tf` and scale the active node count via AWS CLI so there are enough pod slots and memory for the Jenkins controller and dynamic Kaniko agent pods alongside Django, PostgreSQL, and Multi-AZ `ingress-nginx`:
+Ensure `desired_size = 3` and `max_size = 4` are set in `main.tf` and verify active node capacity via AWS CLI so there are enough pod slots and memory for the Jenkins controller, Argo CD, and dynamic Kaniko agent pods alongside Django, PostgreSQL, and Multi-AZ `ingress-nginx`:
 
 ```bash
-terraform apply -target=module.eks
-
 aws eks update-nodegroup-config \
   --region eu-central-1 \
   --cluster-name eks-cluster-demo \
@@ -431,7 +449,7 @@ kubectl apply -f charts/django-app/templates/storageclass.yaml
 
 ### 4. Configure Local Jenkins Secrets (`secrets.yaml`)
 
-1. Generate a **Fine-grained Personal Access Token** in GitHub (*Settings → Developer settings → Personal access tokens → Fine-grained tokens*) scoped only to `dvankevich/my-microservice-project` with **`Contents: Read-only`** permission.
+1. Generate a **Fine-grained Personal Access Token** in GitHub (*Settings → Developer settings → Personal access tokens → Fine-grained tokens*) scoped to `dvankevich/my-microservice-project` with **`Contents: Read and write`** permission (required so the CI/CD pipeline can push updated image tags back to `lesson-7/charts/django-app/values.yaml`).
 2. Copy the example secrets template and populate your Jenkins admin password and GitHub PAT:
 
 ```bash
@@ -462,8 +480,8 @@ kubectl get pvc,pv,pods,svc,ingress,certificate -n jenkins
 ### 7. Generate and Run the CI Pipeline (`django-wagtail-ci`)
 
 1. Open `https://jenkins.dvankevich.pp.ua` in your browser and sign in as `admin`.
-2. Open **`seed-job`** and click **Build Now** (if prompted for script approval, approve it under *Manage Jenkins → In-process Script Approval* and re-run `seed-job`).
-3. Return to the dashboard, open the newly generated **`django-wagtail-ci`** pipeline, and click **Build Now**. Jenkins will spawn an ephemeral Kubernetes pod with `serviceAccountName: jenkins-sa` (scheduled away from `jenkins-0` via `podAntiAffinity` and optimized with `--snapshot-mode=redo --use-new-run` to stay within `t3.small` memory limits), build `lesson-4/mysite/Dockerfile` via Kaniko, and push the resulting image (`:latest` and `:<BUILD_NUMBER>`) to Amazon ECR.
+2. Open **`seed-job`** and click **Build Now** to generate the **`django-wagtail-ci`** pipeline with the GitHub push trigger enabled.
+3. Open **`django-wagtail-ci`** and click **Build Now**. Jenkins spawns an ephemeral Kubernetes pod (`jnlp` + `kaniko` + `git`, scheduled away from `jenkins-0` via `podAntiAffinity`, tuned to `510Mi` total `requests.memory` to fit `t3.small` nodes, and running Kaniko with `--snapshot-mode=redo --use-new-run --compressed-caching=false` under a `1450Mi` memory limit), builds `lesson-4/mysite/Dockerfile`, pushes `:latest` and `:<BUILD_NUMBER>` to Amazon ECR, and commits the updated `image.tag` to `lesson-7/charts/django-app/values.yaml` with `[skip ci]`.
 4. Verify the pushed image tags in ECR:
 
 ```bash
@@ -474,11 +492,85 @@ aws ecr describe-images \
   --output table
 ```
 
-## Cleanup
+## Deploy Argo CD & End-to-End GitOps CI/CD Pipeline
 
-Remove the `django-app` Helm release (which also deletes the `django-app-django` AWS LoadBalancer) and `metrics-server` first, then destroy the Terraform-managed `jenkins` module and its EBS `PersistentVolumeClaim`, and finally run `terraform destroy` to clean up `cluster_addons` (including the `ingress-nginx` ELB), EKS, ECR, and VPC:
+Argo CD (`./modules/argo-cd`) continuously reconciles the live Kubernetes state in the `wagtail` namespace with the Helm chart definitions stored in `lesson-7/charts/django-app` on the `main` branch.
+
+### 1. Protect Existing `django-app-secret` from Pruning
+
+Because `charts/django-app/values.yaml` in Git leaves `secrets.SECRET_KEY` and `secrets.POSTGRES_PASSWORD` empty, the Argo CD `Application` sets `createSecrets=false`. Annotate the pre-existing `django-app-secret` in `wagtail` with `Prune=false` so Argo CD never deletes it during automated syncs:
 
 ```bash
+kubectl annotate secret django-app-secret -n wagtail \
+  argocd.argoproj.io/sync-options=Prune=false --overwrite
+```
+
+### 2. Configure DNS for Argo CD
+
+In your DNS provider for `dvankevich.pp.ua`, create a `CNAME` record for `argocd` pointing to the shared `ingress_elb_hostname`:
+
+```bash
+terraform output -raw ingress_elb_hostname
+dig +short argocd.dvankevich.pp.ua
+```
+
+### 3. Apply Terraform to Deploy Argo CD
+
+Run `terraform init` and `terraform apply` from `lesson-7` to install the `argo-cd` and `argo-cd-apps` Helm releases:
+
+```bash
+terraform init
+terraform apply
+```
+
+### 4. Verify Argo CD Pods, TLS Certificate, and Sign In
+
+Check that all Argo CD pods are `Running`, the Let's Encrypt `Certificate` reaches `READY: True`, and the `django-app` `Application` CRD is created:
+
+```bash
+kubectl get pods,svc,ingress,certificate,applications -n argocd
+```
+
+Retrieve the initial password for the `admin` user:
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Open `https://argocd.dvankevich.pp.ua`, sign in as `admin`, and confirm that **`django-app`** shows **`Synced`** and **`Healthy`** (change the initial admin password under *User Info → Update Password* and optionally delete `argocd-initial-admin-secret`).
+
+### 5. Configure GitHub Webhook for Automated CI/CD
+
+In GitHub (`dvankevich/my-microservice-project` → **Settings → Webhooks → Add webhook**), configure push notifications to Jenkins:
+
+- **Payload URL:** `https://jenkins.dvankevich.pp.ua/github-webhook/` *(the trailing `/` is required so Jenkins returns `200` rather than an HTTP `302` redirect)*
+- **Content type:** `application/json`
+- **Secret:** *(leave blank)*
+- **Events:** `Just the push event`
+
+### 6. Verify the Full GitOps Loop
+
+1. Push an application change in `lesson-4/mysite/` to `main`.
+2. GitHub triggers `django-wagtail-ci` in Jenkins via the webhook.
+3. Kaniko builds the Docker image and pushes `:<BUILD_NUMBER>` and `:latest` to ECR.
+4. The `git` sidecar updates `image.tag` in `lesson-7/charts/django-app/values.yaml` and pushes a commit containing `[skip ci]` (which causes the subsequent webhook-triggered Jenkins run to exit early with `NOT_BUILT`, preventing an infinite build loop).
+5. Argo CD detects the updated `values.yaml` in Git (within 3 minutes or immediately via **Refresh**) and executes a zero-downtime rolling update of `django-app-django` in `wagtail`.
+
+Verify the live container image tag running in EKS:
+
+```bash
+kubectl get deploy django-app-django -n wagtail \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
+```
+
+## Cleanup
+
+Delete the Argo CD `Application` and destroy `module.argo_cd` first (so Argo CD finalizers clean up managed resources cleanly), remove the `django-app` Helm release and `metrics-server`, destroy `module.jenkins` and its EBS `PersistentVolumeClaim`, and finally run `terraform destroy` to clean up `cluster_addons` (including the `ingress-nginx` ELB), EKS, ECR, and VPC:
+
+```bash
+terraform destroy -target=module.argo_cd
+
 helm uninstall django-app -n wagtail
 kubectl delete pvc django-app-postgres-pvc -n wagtail
 helm uninstall metrics-server -n kube-system
