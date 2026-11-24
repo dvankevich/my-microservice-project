@@ -1,19 +1,20 @@
-# Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS) & Helm Deployment
+# Lesson 7: Terraform AWS Infrastructure (S3 Backend, VPC, ECR, EKS, RDS) & Helm Deployment
 
-This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, and an Amazon EKS cluster), cluster add-ons (`ingress-nginx` with Multi-AZ High Availability and `cert-manager` with Let's Encrypt `ClusterIssuer`), a declarative Jenkins CI/CD server using Kaniko and IRSA, an Argo CD GitOps continuous delivery engine, and a custom Helm chart to deploy the Django/Wagtail application with PostgreSQL on persistent AWS EBS storage, dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, horizontal pod autoscaling (HPA), and `topologySpreadConstraints`.
+This directory contains Terraform configurations to provision foundational AWS infrastructure in `eu-central-1` (remote state storage, multi-AZ VPC, private ECR registry, an Amazon EKS cluster, and a universal Amazon RDS / Aurora PostgreSQL module), cluster add-ons (`ingress-nginx` with Multi-AZ High Availability and `cert-manager` with Let's Encrypt `ClusterIssuer`), a declarative Jenkins CI/CD server using Kaniko and IRSA, an Argo CD GitOps continuous delivery engine, and a custom Helm chart to deploy the Django/Wagtail application backed by managed AWS RDS (or optional in-cluster PostgreSQL on persistent AWS EBS storage), dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, horizontal pod autoscaling (HPA), and `topologySpreadConstraints`.
 
 ## Project Structure
 
 ```text
 lesson-7/
 ├── .gitignore                 # Ignores Terraform state/cache and local secrets.yaml files
-├── README.md                  # Infrastructure, deployment, and GitOps CI/CD documentation
+├── README.md                  # Infrastructure, database, deployment, and GitOps CI/CD documentation
 ├── LOAD_TESTING.md            # Load testing guide and HPA scaling verification scenarios
 ├── AUTOMATED_TESTING.md       # Documentation for the automated infrastructure test script
 ├── run-tests.sh               # Automated TLS, HA, rolling update, and load testing script
 ├── backend.tf                 # S3 remote state backend configuration (native S3 lockfile)
-├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, jenkins, and argo_cd
-├── outputs.tf                 # Root outputs (S3, VPC, ECR, EKS, Ingress ELB hostname, Jenkins, and Argo CD info)
+├── main.tf                    # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, jenkins, argo_cd, and rds
+├── variables.tf               # Root input variables (including fallback db_password)
+├── outputs.tf                 # Root outputs (S3, VPC, ECR, EKS, Ingress ELB hostname, Jenkins, Argo CD, and RDS endpoints)
 ├── .terraform.lock.hcl        # Provider dependency lock file
 ├── modules/
 │   ├── argo-cd/
@@ -51,6 +52,13 @@ lesson-7/
 │   │   ├── secrets.yaml       # Local sensitive JCasC credentials and admin password (gitignored)
 │   │   ├── variables.tf       # Module input variables (including OIDC and dynamic ECR repository URL)
 │   │   └── versions.tf        # Required Helm and Kubernetes provider version constraints
+│   ├── rds/
+│   │   ├── aurora.tf          # Amazon Aurora Cluster, writer/reader instances, and cluster parameter group
+│   │   ├── outputs.tf         # Unified writer/reader endpoints, port, DB name, SG ID, and subnet group outputs
+│   │   ├── rds.tf             # Standard aws_db_instance and aws_db_parameter_group
+│   │   ├── shared.tf          # Shared aws_db_subnet_group and aws_security_group
+│   │   ├── variables.tf       # Input variables for RDS, Aurora, networking, and DB engine parameters
+│   │   └── versions.tf        # Required Terraform and AWS provider version constraints
 │   ├── s3-backend/
 │   │   ├── outputs.tf         # Outputs S3 bucket name
 │   │   ├── s3.tf              # S3 state bucket, versioning, and ownership controls
@@ -63,14 +71,14 @@ lesson-7/
 └── charts/
     └── django-app/
         ├── Chart.yaml
-        ├── values.yaml            # Public application configuration (image tag, LoadBalancer/ClusterIP, Ingress, HPA)
+        ├── values.yaml            # Public application configuration (image tag, RDS host, LoadBalancer/ClusterIP, Ingress, HPA)
         ├── secrets.yaml.example   # Template for sensitive credentials (committed to Git)
         └── templates/
-            ├── configmap.yaml     # Non-sensitive environment variables (including CSRF_TRUSTED_ORIGINS)
+            ├── configmap.yaml     # Non-sensitive environment variables (including POSTGRES_HOST and CSRF_TRUSTED_ORIGINS)
             ├── secret.yaml        # Conditional Kubernetes Secret (controlled via createSecrets flag)
             ├── deployment.yaml    # Django/Wagtail Deployment with PostgreSQL readiness initContainer and topologySpreadConstraints
-            ├── postgres.yaml      # PostgreSQL 16 Deployment (Recreate strategy) and ClusterIP Service
-            ├── pvc.yaml           # PersistentVolumeClaim (5Gi) for PostgreSQL data
+            ├── postgres.yaml      # Optional in-cluster PostgreSQL 16 Deployment and ClusterIP Service (postgres.enabled)
+            ├── pvc.yaml           # PersistentVolumeClaim (5Gi) for optional in-cluster PostgreSQL data
             ├── storageclass.yaml  # Encrypted gp3 StorageClass (ebs.csi.aws.com, WaitForFirstConsumer)
             ├── service.yaml       # Configurable Service (LoadBalancer by default, switchable to ClusterIP)
             ├── ingress.yaml       # NGINX Ingress resource with cert-manager TLS annotations
@@ -107,8 +115,8 @@ Provisions a private Amazon ECR repository intended for container images shared 
 Provisions a managed Amazon EKS cluster in `eu-central-1` that runs on the public subnets created by the `vpc` module.
 
 - **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with the `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (default name `eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true` so the identity that creates the cluster receives administrator access.
-- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 3`, `min_size = 2`, `max_size = 4`).
-  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, PostgreSQL, horizontally scaled Django pods, Argo CD, and the Jenkins controller with dynamic Kubernetes Kaniko agent pods without `Too many pods` scheduling errors.
+- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) running on the public subnets using `t3.small` instances (`desired_size = 3`, `min_size = 3`, `max_size = 4`).
+  - **Why `t3.small` (3 nodes) instead of `t3.micro`:** In AWS EKS, the VPC CNI plugin restricts `t3.micro` instances to a maximum of **4 pods per node** due to ENI IP address limits. Switching to `t3.small` provides **2 GiB of RAM** and raises the pod density limit to **11 pods per node**. Running 3 `t3.small` nodes (33 pod slots total) provides enough capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, horizontally scaled Django pods, Argo CD, and the Jenkins controller with dynamic Kubernetes Kaniko agent pods without `Too many pods` scheduling errors.
   - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. If modifying `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
 - **EBS CSI Driver & IRSA (`ebs-csi.tf` & `outputs.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to `kube-system:ebs-csi-controller-sa`, installs the `aws-ebs-csi-driver` EKS add-on, and exports `oidc_provider_arn` and `oidc_provider_url` so downstream modules (such as `jenkins`) can configure IRSA for their own service accounts.
 - **IAM Permissions:** The node IAM role is attached with the standard worker policies (`AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`).
@@ -139,7 +147,17 @@ Deploys Argo CD into the `argocd` namespace as the GitOps Continuous Delivery en
 
 - **Core Argo CD Release (`argo_cd.tf` & `values.yaml`)**: Installs the official `argoproj/argo-cd` Helm chart as a `ClusterIP` service behind the shared Multi-AZ `ingress-nginx` controller and `cert-manager` (`https://argocd.dvankevich.pp.ua`). Sets `configs.params.server.insecure: true` so TLS terminates cleanly at `ingress-nginx` without HTTP-to-HTTPS redirect loops, and disables optional components (`dex`, `notifications`, `applicationSet`) to conserve pod slots on `t3.small` nodes.
 - **Declarative Applications Chart (`argo_cd.tf` & `charts/`)**: Deploys a local `argo-apps` Helm release (`depends_on = [helm_release.argo_cd]`) that provisions the `django-app` `Application` custom resource watching `lesson-7/charts/django-app` on `main` with automated `prune: true` and `selfHeal: true`.
-- **Secret Isolation (`createSecrets=false`)**: Passes `--set createSecrets=false` in the Argo CD `Application` definition so Argo CD manages all application workloads (`Deployment`, `Service`, `ConfigMap`, `Ingress`, `HPA`, `Postgres`) from Git without overwriting or deleting the pre-provisioned `django-app-secret` in the `wagtail` namespace.
+- **Secret Isolation (`createSecrets=false`)**: Passes `--set createSecrets=false` in the Argo CD `Application` definition so Argo CD manages all application workloads (`Deployment`, `Service`, `ConfigMap`, `Ingress`, `HPA`) from Git without overwriting or deleting the pre-provisioned `django-app-secret` in the `wagtail` namespace.
+
+### `rds` (`./modules/rds`)
+
+Provisions a reusable managed relational database layer in AWS capable of deploying either a single **Amazon RDS instance** or a clustered **Amazon Aurora** deployment controlled by the `use_aurora` flag:
+
+- **Dual-Mode Architecture (`rds.tf` & `aurora.tf`)**:
+  - `use_aurora = false`: Provisions a standalone `aws_db_instance` paired with a dedicated `aws_db_parameter_group`.
+  - `use_aurora = true`: Provisions an `aws_rds_cluster`, a primary `writer` instance (`aws_rds_cluster_instance`), optional `read-only` replicas (`aurora_replica_count`), and an `aws_rds_cluster_parameter_group`.
+- **Shared Network & Security Isolation (`shared.tf`)**: Automatically creates an `aws_db_subnet_group` (selecting private subnets when `publicly_accessible = false` or public subnets when `true`) and an `aws_security_group` restricting database port ingress to `allowed_cidr_blocks` (defaulting to the VPC CIDR `10.0.0.0/16`).
+- **Dynamic Engine Tuning**: Applies custom database parameters (`max_connections`, `log_statement`, `work_mem`, etc.) via a `dynamic "parameter"` block and exports unified `db_endpoint`, `db_reader_endpoint`, and `db_port` outputs regardless of the underlying engine mode.
 
 ## Usage
 
@@ -159,7 +177,7 @@ terraform init
 
 ### Plan
 
-Ensure `modules/jenkins/secrets.yaml` has been created from `secrets.yaml.example`, then preview the execution plan:
+Ensure `modules/jenkins/secrets.yaml` and `charts/django-app/secrets.yaml` have been created from their `.example` templates, then preview the execution plan:
 
 ```bash
 terraform plan
@@ -173,7 +191,7 @@ Provision or update the infrastructure in AWS:
 terraform apply
 ```
 
-*(Note: When provisioning a brand-new cluster from scratch, `kubernetes_manifest` in `module.cluster_addons` requires the `cert-manager.io/v1` CRD to exist before planning. Deploy core AWS resources and `cert-manager` first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks -target=module.cluster_addons.helm_release.cert_manager`, apply `charts/django-app/templates/storageclass.yaml`, prepare `modules/jenkins/secrets.yaml`, and then run `terraform apply` to finish deploying `module.cluster_addons`, `module.jenkins`, and `module.argo_cd`.)*
+*(Note: When provisioning a brand-new cluster from scratch, `kubernetes_manifest` in `module.cluster_addons` requires the `cert-manager.io/v1` CRD to exist before planning. Deploy core AWS resources and `cert-manager` first via `terraform apply -target=module.vpc -target=module.ecr -target=module.eks -target=module.rds -target=module.cluster_addons.helm_release.cert_manager`, apply `charts/django-app/templates/storageclass.yaml`, prepare `modules/jenkins/secrets.yaml`, and then run `terraform apply` to finish deploying `module.cluster_addons`, `module.jenkins`, and `module.argo_cd`.)*
 
 ## Build and Push Django Docker Image to ECR (Manual Bootstrap)
 
@@ -222,7 +240,7 @@ cd ../../lesson-7
 
 ## Deploy Ingress, TLS (`cert-manager`), and Django Application to EKS
 
-The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`), provisions an encrypted `gp3` AWS EBS volume via `PersistentVolumeClaim` (`subPath: pgdata`, `Recreate` deployment strategy), and supports both direct L4 `LoadBalancer` access and L7 HTTPS termination via `ingress-nginx` and Let's Encrypt.
+The `charts/django-app` Helm chart separates non-sensitive configuration (`ConfigMap` via `values.yaml`) from sensitive credentials (`Kubernetes Secret` via `secrets.yaml`), connects to the external AWS RDS PostgreSQL instance (or an optional in-cluster PostgreSQL pod when `postgres.enabled: true`), and supports both direct L4 `LoadBalancer` access and L7 HTTPS termination via `ingress-nginx` and Let's Encrypt.
 
 ### 1. Configure `kubectl` for EKS
 
@@ -261,7 +279,7 @@ dig +short django-app.dvankevich.pp.ua
 
 ### 3. Prepare Local Secrets File
 
-Copy the example secrets template and populate your actual `SECRET_KEY` and `POSTGRES_PASSWORD`. All `**/secrets.yaml` files are excluded via `.gitignore` so credentials are never committed to version control:
+Copy the example secrets template and populate your actual `SECRET_KEY` and `POSTGRES_PASSWORD` (ensure `POSTGRES_PASSWORD` is 8–128 printable ASCII characters without `/`, `@`, `"`, or spaces so it is valid for both AWS RDS and Django). All `**/secrets.yaml` files are excluded via `.gitignore` so credentials are never committed to version control:
 
 ```bash
 cp charts/django-app/secrets.yaml.example charts/django-app/secrets.yaml
@@ -295,10 +313,10 @@ helm upgrade --install django-app ./charts/django-app \
 
 ### 5. Verify the Deployment, LoadBalancer, and TLS Certificate
 
-Check that the `PersistentVolumeClaim` is `Bound`, all pods are `Running`, `django-app-django` has an `EXTERNAL-IP` LoadBalancer, and the TLS `Certificate` reaches `READY: True` (takes ~1–2 minutes for the Let's Encrypt HTTP-01 challenge):
+Check that all pods are `Running`, `django-app-django` has an `EXTERNAL-IP` LoadBalancer, and the TLS `Certificate` reaches `READY: True` (takes ~1–2 minutes for the Let's Encrypt HTTP-01 challenge):
 
 ```bash
-kubectl get pvc,pv,pods,svc,ingress,certificate,hpa,secret -n wagtail
+kubectl get pods,svc,ingress,certificate,hpa,secret -n wagtail
 ```
 
 Verify both L7 HTTPS access (via `ingress-nginx`) and direct L4 HTTP access (via the `LoadBalancer` service):
@@ -310,7 +328,7 @@ curl -I http://$(kubectl get svc django-app-django -n wagtail -o jsonpath='{.sta
 
 ### 6. Create Django/Wagtail Superuser
 
-Once both `postgres` and `django` pods reach the `1/1 Running` state (ensuring database migrations in `entrypoint.sh` have completed), create an administrative user non-interactively via environment variables:
+Once the `django` pods reach the `1/1 Running` state (ensuring database migrations in `entrypoint.sh` have completed), create an administrative user non-interactively via environment variables:
 
 ```bash
 kubectl exec deployment/django-app-django -n wagtail -- \
@@ -324,7 +342,7 @@ kubectl exec deployment/django-app-django -n wagtail -- \
 
 Afterward, sign in to the Wagtail admin interface at `https://django-app.dvankevich.pp.ua/admin/`.
 
-> **Note:** Because PostgreSQL stores its data on an AWS EBS volume via `PersistentVolumeClaim` (`django-app-postgres-pvc`), database tables and the superuser account persist across pod restarts and redeployments. If the PostgreSQL volume is ever recreated from scratch while the Django pod is already running, trigger `kubectl rollout restart deployment/django-app-django -n wagtail` so `entrypoint.sh` re-runs `python manage.py migrate`.
+> **Note:** Because application data is stored in the managed Amazon RDS PostgreSQL database (`wagtail-db`), tables and user accounts persist independently of EKS pod lifecycles.
 
 ## Horizontal Pod Autoscaler (HPA) Configuration
 
@@ -412,6 +430,167 @@ kubectl get pods -n wagtail -o wide
 kubectl get pods -n ingress-nginx -o wide
 ```
 
+## Deploy Managed Database (AWS RDS / Aurora)
+
+The reusable `./modules/rds` Terraform module abstracts database provisioning behind a single `use_aurora` boolean switch, automatically creating the `aws_db_subnet_group`, `aws_security_group`, and engine-specific parameter group (`aws_db_parameter_group` or `aws_rds_cluster_parameter_group`).
+
+### 1. Module Usage Example (`main.tf`)
+
+In `lesson-7/main.tf`, `locals` reads `POSTGRES_PASSWORD` directly from the gitignored `charts/django-app/secrets.yaml` file (falling back to `var.db_password` if the file is absent) so Terraform and Kubernetes share a single source of truth for credentials:
+
+```hcl
+locals {
+  django_secrets = try(
+    yamldecode(file("${path.module}/charts/django-app/secrets.yaml")).secrets,
+    {}
+  )
+  db_password = coalesce(
+    try(local.django_secrets["POSTGRES_PASSWORD"], null),
+    var.db_password
+  )
+}
+
+module "rds" {
+  source = "./modules/rds"
+
+  name                 = "wagtail-db"
+  use_aurora           = false # false = standard RDS instance; true = Aurora Cluster + writer
+  aurora_replica_count = 0     # Number of read-only replicas when use_aurora = true
+
+  # --- Standard RDS-only ---
+  engine                     = "postgres"
+  engine_version             = "16"
+  parameter_group_family_rds = "postgres16"
+  allocated_storage          = 20
+
+  # --- Aurora-only ---
+  engine_cluster                = "aurora-postgresql"
+  engine_version_cluster        = "16.4"
+  parameter_group_family_aurora = "aurora-postgresql16"
+
+  # --- Common Configuration ---
+  instance_class          = "db.t3.micro"
+  db_name                 = "wagtail"
+  username                = "wagtail_user"
+  password                = local.db_password
+  vpc_id                  = module.vpc.vpc_id
+  subnet_private_ids      = module.vpc.private_subnets
+  subnet_public_ids       = module.vpc.public_subnets
+  publicly_accessible     = false
+  allowed_cidr_blocks     = ["10.0.0.0/16"]
+  multi_az                = false
+  backup_retention_period = 1
+  skip_final_snapshot     = true
+
+  parameters = {
+    max_connections = "100"
+    log_statement   = "ddl"
+    work_mem        = "8192" # 8 MB (specified in KB for PostgreSQL)
+  }
+
+  tags = {
+    Environment = "dev"
+    Project     = "wagtail-eks"
+  }
+}
+```
+
+### 2. Input Variables Reference (`modules/rds/variables.tf`)
+
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `name` | `string` | *(required)* | Base identifier used to name the RDS instance or Aurora cluster, subnet group, security group, and parameter group. |
+| `use_aurora` | `bool` | `false` | Architecture mode switch: `true` deploys an Amazon Aurora cluster (`aws_rds_cluster` + writer/reader instances); `false` deploys a single standard `aws_db_instance`. |
+| `engine` | `string` | `"postgres"` | Database engine for standard RDS (`postgres`, `mysql`, `mariadb`, etc.). |
+| `engine_version` | `string` | `"16"` | Engine version for standard RDS (accepts major version like `"16"` or specific minor version like `"17.2"`). |
+| `parameter_group_family_rds` | `string` | `"postgres16"` | Parameter group family for standard RDS. Must match `engine` and `engine_version` (e.g., `postgres16`, `postgres17`, `mysql8.0`). |
+| `allocated_storage` | `number` | `20` | Storage capacity in GiB for standard RDS (not used by Aurora, which scales storage automatically). |
+| `engine_cluster` | `string` | `"aurora-postgresql"` | Database engine for Aurora clusters (`aurora-postgresql` or `aurora-mysql`). |
+| `engine_version_cluster` | `string` | `"16.4"` | Engine version for Aurora clusters (must be an AWS-supported Aurora release). |
+| `parameter_group_family_aurora` | `string` | `"aurora-postgresql16"` | Cluster parameter group family for Aurora. Must match `engine_cluster` and `engine_version_cluster` (e.g., `aurora-postgresql16`, `aurora-mysql8.0`). |
+| `aurora_replica_count` | `number` | `0` | Number of read-only Aurora replica instances created alongside the primary `writer` instance when `use_aurora = true`. |
+| `instance_class` | `string` | `"db.t3.micro"` | Compute/memory instance class (`db.t3.micro` for AWS Free Tier standard RDS; `db.t3.medium`, `db.r6g.large`, etc. for Aurora or production). |
+| `db_name` | `string` | *(required)* | Name of the initial database created when the instance or cluster initializes. |
+| `username` | `string` | *(required)* | Master database administrator username. |
+| `password` | `string` (`sensitive`) | *(required)* | Master database administrator password (8–128 printable ASCII characters, excluding `/`, `@`, `"`, and spaces). |
+| `multi_az` | `bool` | `false` | Enables Multi-AZ standby replication for standard RDS (`use_aurora = false`). |
+| `backup_retention_period` | `number` | `1` | Number of days to retain automated backups (`0` disables automated backups). |
+| `skip_final_snapshot` | `bool` | `true` | Skips creating a final DB snapshot on deletion (`true` recommended for dev/test; set to `false` in production). |
+| `vpc_id` | `string` | *(required)* | ID of the VPC where the database and its Security Group are created. |
+| `subnet_private_ids` | `list(string)` | *(required)* | List of private subnet IDs used by `aws_db_subnet_group` when `publicly_accessible = false`. |
+| `subnet_public_ids` | `list(string)` | *(required)* | List of public subnet IDs used by `aws_db_subnet_group` when `publicly_accessible = true`. |
+| `publicly_accessible` | `bool` | `false` | Controls public IP allocation and subnet selection (`false` isolates the database in private subnets; `true` places it in public subnets). |
+| `db_port` | `number` | `5432` | TCP port opened in the Security Group and assigned to the database (`5432` for PostgreSQL, `3306` for MySQL/MariaDB). |
+| `allowed_cidr_blocks` | `list(string)` | `["10.0.0.0/16"]` | CIDR ranges permitted to connect to `db_port` in the database Security Group. |
+| `parameters` | `map(string)` | `max_connections="100"`, `log_statement="ddl"`, `work_mem="8192"` | Key-value map of custom engine parameters applied to the DB or Cluster Parameter Group (`pending-reboot`). |
+| `tags` | `map(string)` | `{}` | Map of AWS resource tags applied to all resources created by the module. |
+
+### 3. How to Switch Database Type, Engine, Instance Class & Scaling
+
+All database architecture settings are controlled via `module "rds"` in `lesson-7/main.tf`:
+
+- **Switch between Standard RDS PostgreSQL and Amazon Aurora PostgreSQL:**
+  Because `engine_cluster = "aurora-postgresql"`, `engine_version_cluster = "16.4"`, and `parameter_group_family_aurora = "aurora-postgresql16"` are already configured in `main.tf`, switching modes requires changing only `use_aurora` and `instance_class`:
+  - **Standard RDS PostgreSQL (AWS Free Tier compatible):**
+    ```hcl
+    use_aurora     = false
+    instance_class = "db.t3.micro"
+    ```
+  - **Amazon Aurora PostgreSQL Cluster:**
+    ```hcl
+    use_aurora           = true
+    aurora_replica_count = 1              # 1 primary writer + 1 read-only replica (set 0 for writer-only)
+    instance_class       = "db.t3.medium" # Aurora requires db.t3.medium or db.r* instance classes
+    ```
+- **Change PostgreSQL Version or Reuse the Module for MySQL:**
+  - To change the PostgreSQL major version, update `engine_version` and `parameter_group_family_rds` (e.g., `"17"` and `"postgres17"`) or `engine_version_cluster` and `parameter_group_family_aurora`.
+  - When reusing `./modules/rds` in another project with MySQL, set `engine = "mysql"` (`parameter_group_family_rds = "mysql8.0"`) or `engine_cluster = "aurora-mysql"` (`parameter_group_family_aurora = "aurora-mysql8.0"`) along with `db_port = 3306`.
+- **Scale Compute, Storage, or High Availability:**
+  - Upgrade `instance_class` (e.g., from `"db.t3.micro"` to `"db.t3.small"` or `"db.t3.medium"`).
+  - Increase `allocated_storage` (e.g., from `20` to `50` GiB) for standard RDS.
+  - Enable `multi_az = true` for synchronous standby failover on standard RDS.
+- **Tune PostgreSQL Engine Parameters:**
+  Adjust entries in the `parameters` map (PostgreSQL memory parameters such as `work_mem` must be specified as integer strings in **kilobytes**, e.g., `"8192"` for `8 MB`):
+  ```hcl
+  parameters = {
+    max_connections            = "200"
+    log_statement              = "ddl"
+    log_min_duration_statement = "500"
+    work_mem                   = "16384"
+  }
+  ```
+
+### 4. Provision RDS and Connect Django/Wagtail
+
+1. **Apply the `rds` module via Terraform:**
+   ```bash
+   terraform init
+   terraform apply -target=module.rds
+   terraform output -raw rds_endpoint
+   ```
+2. **Verify the RDS instance and custom parameter group in AWS:**
+   ```bash
+   aws rds describe-db-instances \
+     --region eu-central-1 \
+     --db-instance-identifier wagtail-db \
+     --query 'DBInstances[0].{Status:DBInstanceStatus,Engine:Engine,Version:EngineVersion,Class:DBInstanceClass,Endpoint:Endpoint.Address}'
+
+   aws rds describe-db-parameters \
+     --region eu-central-1 \
+     --db-parameter-group-name wagtail-db-rds-params \
+     --source user \
+     --output table
+   ```
+3. **Point `charts/django-app/values.yaml` to the RDS endpoint:**
+   Set `postgres.enabled: false` (to free node RAM and pod slots on EKS) and update `env.POSTGRES_HOST` (`<rds_endpoint>`) and `env.POSTGRES_USER` (`"wagtail_user"`). Ensure `django-app-secret` in the `wagtail` namespace holds the matching `POSTGRES_PASSWORD`:
+   ```bash
+   helm template django-app ./charts/django-app \
+     -s templates/secret.yaml \
+     -f ./charts/django-app/secrets.yaml \
+     --set createSecrets=true | kubectl apply -n wagtail -f -
+   ```
+4. **Commit and push `values.yaml` to `main`:** Argo CD automatically updates `ConfigMap` (`django-app-config`) and rolls out the Django pods connected to Amazon RDS.
+
 ## Deploy Jenkins CI/CD Server & Kaniko ECR Pipeline
 
 Jenkins is provisioned via `./modules/jenkins`, integrating IRSA for passwordless ECR image pushes, JCasC for declarative credentials and job generation, and Kubernetes pod agents running Kaniko and Git.
@@ -427,14 +606,14 @@ dig +short jenkins.dvankevich.pp.ua
 
 ### 2. Ensure Sufficient Cluster Capacity (3 Nodes)
 
-Ensure `desired_size = 3` and `max_size = 4` are set in `main.tf` and verify active node capacity via AWS CLI so there are enough pod slots and memory for the Jenkins controller, Argo CD, and dynamic Kaniko agent pods alongside Django, PostgreSQL, and Multi-AZ `ingress-nginx`:
+Ensure `desired_size = 3` and `max_size = 4` are set in `main.tf` and verify active node capacity via AWS CLI so there are enough pod slots and memory for the Jenkins controller, Argo CD, and dynamic Kaniko agent pods alongside Django and Multi-AZ `ingress-nginx`:
 
 ```bash
 aws eks update-nodegroup-config \
   --region eu-central-1 \
   --cluster-name eks-cluster-demo \
   --nodegroup-name general \
-  --scaling-config minSize=2,maxSize=4,desiredSize=3
+  --scaling-config minSize=3,maxSize=4,desiredSize=3
 
 kubectl get nodes
 ```
@@ -561,13 +740,14 @@ flowchart TD
     ArgoCD["Argo CD<br/>(argocd namespace)"] -->|"7. Poll lesson-7/charts/django-app"| GitHub
     ArgoCD -->|"8. Automated Sync (Helm)"| EKS["Amazon EKS Cluster<br/>(wagtail namespace)"]
     EKS -.->|"9. Pull :BUILD_NUMBER image"| ECR
+    EKS <-->|"10. PostgreSQL (port 5432)"| RDS[("Amazon RDS / Aurora<br/>wagtail-db")]
 ```
 
 1. Push an application change in `lesson-4/mysite/` to `main`.
 2. GitHub triggers `django-wagtail-ci` in Jenkins via the webhook.
 3. Kaniko builds the Docker image and pushes `:<BUILD_NUMBER>` and `:latest` to ECR.
 4. The `git` sidecar updates `image.tag` in `lesson-7/charts/django-app/values.yaml` and pushes a commit containing `[skip ci]`.
-5. Argo CD detects the updated `values.yaml` in Git (within 3 minutes or immediately via **Refresh**) and executes a zero-downtime rolling update of `django-app-django` in `wagtail`.
+5. Argo CD detects the updated `values.yaml` in Git (within 3 minutes or immediately via **Refresh**) and executes a zero-downtime rolling update of `django-app-django` in `wagtail`, which connects to the managed Amazon RDS PostgreSQL database.
 
 ## How to Verify the Jenkins Job
 
@@ -626,20 +806,21 @@ Confirm from the CLI that the running `Deployment` uses the exact tag built by J
 kubectl get application django-app -n argocd
 kubectl get deploy django-app-django -n wagtail -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
 kubectl get rs,pods -n wagtail
-curl -I [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua)
+curl -I https://django-app.dvankevich.pp.ua
 ```
 
 ## Cleanup
 
-Delete the Argo CD `Application` and destroy `module.argo_cd` first (so Argo CD finalizers clean up managed resources cleanly), remove the `django-app` Helm release and `metrics-server`, destroy `module.jenkins` and its EBS `PersistentVolumeClaim`, and finally run `terraform destroy` to clean up `cluster_addons` (including the `ingress-nginx` ELB), EKS, ECR, and VPC:
+Delete the Argo CD `Application` and destroy `module.argo_cd` first (so Argo CD finalizers clean up managed resources cleanly), remove the `django-app` Helm release and `metrics-server`, destroy `module.rds` and `module.jenkins` (along with its EBS `PersistentVolumeClaim`), and finally run `terraform destroy` to clean up `cluster_addons` (including the `ingress-nginx` ELB), EKS, ECR, and VPC:
 
 ```bash
 terraform destroy -target=module.argo_cd
 
 helm uninstall django-app -n wagtail
-kubectl delete pvc django-app-postgres-pvc -n wagtail
+kubectl delete pvc django-app-postgres-pvc -n wagtail --ignore-not-found
 helm uninstall metrics-server -n kube-system
 
+terraform destroy -target=module.rds
 terraform destroy -target=module.jenkins
 kubectl delete pvc -n jenkins --all
 
