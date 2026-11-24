@@ -35,7 +35,7 @@ autoscaling:
   targetCPUUtilizationPercentage: 70
 
 postgres:
-  enabled: true
+  enabled: false
   image: "postgres:16-alpine"
   port: 5432
   persistence:
@@ -58,8 +58,8 @@ env:
   ALLOWED_HOSTS: "*"
   CSRF_TRUSTED_ORIGINS: "https://django-app.dvankevich.pp.ua"
   POSTGRES_DB: "wagtail"
-  POSTGRES_USER: "wagtail"
-  POSTGRES_HOST: "{{ .Release.Name }}-postgres"
+  POSTGRES_USER: "wagtail_user"
+  POSTGRES_HOST: "wagtail-db.cxkcuswm8ozq.eu-central-1.rds.amazonaws.com"
   POSTGRES_PORT: "5432"
 
 # Чутливі дані (підуть у Secret, реальні значення передаємо при деплої)

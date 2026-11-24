@@ -21,7 +21,6 @@ spec:
           labelSelector:
             matchLabels:
               app: {{ .Release.Name }}-django
-      {{- if .Values.postgres.enabled }}
       initContainers:
         - name: wait-for-postgres
           image: {{ .Values.postgres.image }}
@@ -29,8 +28,8 @@ spec:
             - sh
             - -c
             - |
-              until pg_isready -h {{ .Release.Name }}-postgres -p {{ .Values.postgres.port }} -U "$POSTGRES_USER"; do
-                echo "Waiting for PostgreSQL..."
+              until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+                echo "Waiting for PostgreSQL at $POSTGRES_HOST:$POSTGRES_PORT..."
                 sleep 2
               done
           envFrom:
@@ -38,7 +37,6 @@ spec:
                 name: {{ .Release.Name }}-config
             - secretRef:
                 name: {{ .Release.Name }}-secret
-      {{- end }}
       containers:
         - name: django
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

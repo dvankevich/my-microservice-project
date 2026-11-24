@@ -92,3 +92,19 @@ output "argocd_admin_password_command" {
   description = "Команда для отримання пароля адміністратора Argo CD"
   value       = module.argo_cd.admin_password_command
 }
+
+#------------ RDS ---------------
+output "rds_endpoint" {
+  description = "PostgreSQL writer endpoint"
+  value       = module.rds.db_endpoint
+}
+
+output "rds_reader_endpoint" {
+  description = "PostgreSQL reader endpoint"
+  value       = module.rds.db_reader_endpoint
+}
+
+output "rds_port" {
+  description = "PostgreSQL port"
+  value       = module.rds.db_port
+}
