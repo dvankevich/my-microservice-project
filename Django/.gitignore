@@ -1,4 +1,4 @@
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,29 +17,12 @@ htmlcov/
 dist/
 build/
 
-# Django
+# --- Django / Wagtail ---
 db.sqlite3
 *.sqlite3
-media/
 staticfiles/
+media/
 local_settings.py
 
-# Env
-.env
-.env.local
-.env.*.local
-
-# IDE / OS
-.vscode/
-.idea/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-
-# Docker volumes (якщо з'являться локальні)
+# --- Локальні Docker volumes ---
 postgres_data/

@@ -81,7 +81,7 @@ controller:
                                 branches("*/main")
                               }
                             }
-                            scriptPath("lesson-4/mysite/Jenkinsfile")
+                            scriptPath("Django/Jenkinsfile")
                             lightweight(true)
                           }
                         }

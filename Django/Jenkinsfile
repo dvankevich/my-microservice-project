@@ -94,8 +94,8 @@ spec:
         container('kaniko') {
           sh '''
             /kaniko/executor \
-              --context="${WORKSPACE}/lesson-4/mysite" \
-              --dockerfile="${WORKSPACE}/lesson-4/mysite/Dockerfile" \
+              --context="${WORKSPACE}/Django" \
+              --dockerfile="${WORKSPACE}/Django/Dockerfile" \
               --destination="${ECR_REPO_URL}:latest" \
               --destination="${ECR_REPO_URL}:${BUILD_NUMBER}" \
               --snapshot-mode=redo \
@@ -118,12 +118,12 @@ spec:
               git clone https://${GIT_USERNAME}:${GIT_PAT}@github.com/dvankevich/my-microservice-project.git /tmp/repo
               cd /tmp/repo
 
-              sed -i 's|^  tag: .*|  tag: "'"${BUILD_NUMBER}"'"|' lesson-7/charts/django-app/values.yaml
+              sed -i 's|^  tag: .*|  tag: "'"${BUILD_NUMBER}"'"|' charts/django-app/values.yaml
 
               git config user.email "${COMMIT_EMAIL}"
               git config user.name "${COMMIT_NAME}"
 
-              git add lesson-7/charts/django-app/values.yaml
+              git add charts/django-app/values.yaml
               git commit -m "chore(cd): update django-app image tag to ${BUILD_NUMBER} [skip ci]"
               git push origin main
             '''

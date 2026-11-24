@@ -50,7 +50,7 @@ postgres:
       cpu: 250m
       memory: 256Mi
 
-# Змінні середовища, перенесені з lesson-4/mysite/.env та docker-compose.yml
+# Змінні середовища, перенесені з Django/.env та docker-compose.yml
 env:
   DJANGO_SETTINGS_MODULE: "mysite.settings.docker"
   PORT: "8000"

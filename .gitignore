@@ -1,0 +1,34 @@
+# --- IDE & OS (діє на весь репозиторій) ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Секрети та змінні оточення ---
+.env
+.env.*
+!.env.example
+**/secrets.yaml
+!**/secrets.yaml.example
+
+# --- Terraform ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars
+!*.tfvars.example
+
+# --- Helm ---
+charts/**/*.tgz
+
+# --- Logs ---
+*.log
+logs/
