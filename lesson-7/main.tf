@@ -93,3 +93,59 @@ module "argo_cd" {
     module.cluster_addons
   ]
 }
+
+
+locals {
+  django_secrets = try(
+    yamldecode(file("${path.module}/charts/django-app/secrets.yaml")).secrets,
+    {}
+  )
+  db_password = coalesce(
+    try(local.django_secrets["POSTGRES_PASSWORD"], null),
+    var.db_password
+  )
+}
+
+module "rds" {
+  source = "./modules/rds"
+
+  name                 = "wagtail-db"
+  use_aurora           = false # false = стандартна RDS (Free Tier); true = Aurora Cluster + writer
+  aurora_replica_count = 0
+
+  # --- RDS-only ---
+  engine                     = "postgres"
+  engine_version             = "16"
+  parameter_group_family_rds = "postgres16"
+  allocated_storage          = 20
+
+  # --- Aurora-only ---
+  engine_cluster                = "aurora-postgresql"
+  engine_version_cluster        = "16.4"
+  parameter_group_family_aurora = "aurora-postgresql16"
+
+  # --- Спільні параметри ---
+  instance_class          = "db.t3.micro"
+  db_name                 = "wagtail"
+  username                = "wagtail_user"
+  password                = local.db_password
+  vpc_id                  = module.vpc.vpc_id
+  subnet_private_ids      = module.vpc.private_subnets
+  subnet_public_ids       = module.vpc.public_subnets
+  publicly_accessible     = false
+  allowed_cidr_blocks     = ["10.0.0.0/16"]
+  multi_az                = false
+  backup_retention_period = 1
+  skip_final_snapshot     = true
+
+  parameters = {
+    max_connections = "100"
+    log_statement   = "ddl"
+    work_mem        = "8192" # 8 МБ (значення в кілобайтах для PostgreSQL)
+  }
+
+  tags = {
+    Environment = "dev"
+    Project     = "wagtail-eks"
+  }
+}
