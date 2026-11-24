@@ -304,7 +304,7 @@ kubectl get pvc,pv,pods,svc,ingress,certificate,hpa,secret -n wagtail
 Verify both L7 HTTPS access (via `ingress-nginx`) and direct L4 HTTP access (via the `LoadBalancer` service):
 
 ```bash
-curl -I https://django-app.dvankevich.pp.ua
+curl -I [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua)
 curl -I http://$(kubectl get svc django-app-django -n wagtail -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 ```
 
@@ -335,7 +335,7 @@ Amazon EKS does not include `metrics-server` by default. Without it, `Horizontal
 Install `metrics-server` into the `kube-system` namespace:
 
 ```bash
-helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm repo add metrics-server [https://kubernetes-sigs.github.io/metrics-server/](https://kubernetes-sigs.github.io/metrics-server/)
 helm repo update
 
 helm upgrade --install metrics-server metrics-server/metrics-server \
@@ -542,6 +542,27 @@ In GitHub (`dvankevich/my-microservice-project` → **Settings → Webhooks → 
 
 ### 6. End-to-End GitOps Flow Overview
 
+```mermaid
+flowchart TD
+    Dev(["Developer"]) -->|"1. git push (main)"| GitHub[("GitHub Repository<br/>dvankevich/my-microservice-project")]
+    GitHub -->|"2. Webhook POST /github-webhook/"| Jenkins["Jenkins Controller<br/>(jenkins namespace)"]
+    Jenkins -->|"3. Provision Ephemeral Agent Pod"| Agent
+
+    subgraph Agent ["Kubernetes Pod Agent (IRSA)"]
+        Kaniko["Kaniko Container<br/>(Build Dockerfile)"]
+        GitContainer["Git Container<br/>(Update Helm tag)"]
+    end
+
+    Kaniko -->|"4. Push :BUILD_NUMBER & :latest"| ECR[("Amazon ECR<br/>lesson-5-ecr")]
+    Kaniko --> GitContainer
+    GitContainer -->|"5. Commit & push values.yaml [skip ci]"| GitHub
+    GitHub -.->|"6. Webhook ignored ([skip ci])"| Jenkins
+
+    ArgoCD["Argo CD<br/>(argocd namespace)"] -->|"7. Poll lesson-7/charts/django-app"| GitHub
+    ArgoCD -->|"8. Automated Sync (Helm)"| EKS["Amazon EKS Cluster<br/>(wagtail namespace)"]
+    EKS -.->|"9. Pull :BUILD_NUMBER image"| ECR
+```
+
 1. Push an application change in `lesson-4/mysite/` to `main`.
 2. GitHub triggers `django-wagtail-ci` in Jenkins via the webhook.
 3. Kaniko builds the Docker image and pushes `:<BUILD_NUMBER>` and `:latest` to ECR.
@@ -605,7 +626,7 @@ Confirm from the CLI that the running `Deployment` uses the exact tag built by J
 kubectl get application django-app -n argocd
 kubectl get deploy django-app-django -n wagtail -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
 kubectl get rs,pods -n wagtail
-curl -I https://django-app.dvankevich.pp.ua
+curl -I [https://django-app.dvankevich.pp.ua](https://django-app.dvankevich.pp.ua)
 ```
 
 ## Cleanup
