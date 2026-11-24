@@ -108,3 +108,20 @@ output "rds_port" {
   description = "PostgreSQL port"
   value       = module.rds.db_port
 }
+
+#-------------Monitoring----------
+
+output "monitoring_namespace" {
+  description = "Namespace, у якому розгорнуто Prometheus"
+  value       = module.monitoring.monitoring_namespace
+}
+
+output "prometheus_service_url" {
+  description = "Внутрішній кластерний URL Prometheus"
+  value       = module.monitoring.prometheus_service_url
+}
+
+output "prometheus_port_forward_command" {
+  description = "Команда для відкриття веб-інтерфейсу Prometheus"
+  value       = module.monitoring.port_forward_command
+}

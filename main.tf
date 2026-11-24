@@ -26,9 +26,9 @@ module "eks" {
   cluster_name  = "eks-cluster-demo"        # Назва кластера
   subnet_ids    = module.vpc.public_subnets # ID підмереж
   instance_type = "t3.small"                # Тип інстансів
-  desired_size  = 3                         # Бажана кількість нодів
-  max_size      = 4                         # Максимальна кількість нодів
-  min_size      = 3                         # Мінімальна кількість нодів
+  desired_size  = 4                         # Бажана кількість нодів
+  max_size      = 5                         # Максимальна кількість нодів
+  min_size      = 4                         # Мінімальна кількість нодів
 }
 
 # Отримуємо дані кластера EKS для провайдерів Helm та Kubernetes
@@ -94,6 +94,17 @@ module "argo_cd" {
   ]
 }
 
+# Підключаємо модуль моніторингу (Prometheus)
+module "monitoring" {
+  source             = "./modules/monitoring"
+  namespace          = "monitoring"
+  storage_class_name = "ebs-gp3"
+  storage_size       = "5Gi"
+  retention          = "3d"
+  ingress_enabled    = false
+
+  depends_on = [module.eks, module.cluster_addons]
+}
 
 locals {
   django_secrets = try(

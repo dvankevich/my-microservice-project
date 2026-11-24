@@ -1,0 +1,8 @@
+# Додаткові зовнішні або сервісні таргети для автоматичного виявлення через kubernetes_sd_config
+customTargets: []
+  # Приклад підключення кастомного експортера:
+  # - name: postgres-exporter
+  #   ip: 10.0.4.15
+  #   port: 9187
+  #   metricsPath: /metrics
+  
