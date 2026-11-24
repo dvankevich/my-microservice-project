@@ -1,0 +1,30 @@
+{{- range .Values.customTargets }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: target-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .port | quote }}
+    prometheus.io/path: {{ .metricsPath | default "/metrics" | quote }}
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .port }}
+      targetPort: {{ .port }}
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: target-{{ .name }}
+  namespace: {{ $.Release.Namespace }}
+subsets:
+  - addresses:
+      - ip: {{ .ip }}
+    ports:
+      - name: metrics
+        port: {{ .port }}
+{{- end }}

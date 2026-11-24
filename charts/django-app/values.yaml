@@ -34,6 +34,12 @@ autoscaling:
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
 
+# Анотації для подів (можна увімкнути для автоматичного збору метрик Prometheus)
+podAnnotations: {}
+  # prometheus.io/scrape: "true"
+  # prometheus.io/port: "8000"
+  # prometheus.io/path: "/metrics"
+
 postgres:
   enabled: false
   image: "postgres:16-alpine"

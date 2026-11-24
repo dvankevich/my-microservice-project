@@ -1,0 +1,58 @@
+# Вимикаємо компоненти, які не потрібні на старті, щоб зекономити слоти подів та RAM на t3.small
+alertmanager:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  retention: "${retention}"
+
+  service:
+    type: ClusterIP
+    servicePort: 80
+
+  persistentVolume:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    storageClass: "${storage_class_name}"
+    size: "${storage_size}"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  ingress:
+    enabled: ${ingress_enabled}
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: "${cluster_issuer_name}"
+    hosts:
+      - "${prometheus_host}"
+    tls:
+      - secretName: prometheus-tls
+        hosts:
+          - "${prometheus_host}"
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
