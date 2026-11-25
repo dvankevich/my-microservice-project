@@ -1,11 +1,11 @@
-# AWS EKS Microservice Infrastructure & GitOps Platform (Terraform, Helm, Jenkins, Argo CD, Prometheus)
+# AWS EKS Microservice Infrastructure & GitOps Platform (Terraform, Helm, Jenkins, Argo CD, Prometheus & Grafana)
 
 This repository contains Terraform configurations, Helm charts, and the Django/Wagtail application source code to provision and operate a complete cloud-native platform on AWS (`eu-central-1`):
 
-- **Core AWS Infrastructure**: Remote S3 Terraform state with native S3 locking, a multi-AZ VPC, a private Amazon ECR registry, an Amazon EKS cluster (`4 x t3.small` worker nodes across 3 Availability Zones), and a reusable Amazon RDS / Aurora PostgreSQL module isolated in private subnets.
+- **Core AWS Infrastructure**: Remote S3 Terraform state with native S3 locking, a multi-AZ VPC, a private Amazon ECR registry, an Amazon EKS cluster (`5 x t3.small` worker nodes across 3 Availability Zones), and a reusable Amazon RDS / Aurora PostgreSQL module isolated in private subnets.
 - **Cluster Add-ons & Storage**: Multi-AZ `ingress-nginx` controller, `cert-manager` with a production Let's Encrypt `ClusterIssuer`, and a cluster-scoped encrypted `ebs-gp3` `StorageClass`.
 - **GitOps CI/CD Pipeline**: A declarative Jenkins CI server using Kaniko and IRSA for passwordless ECR builds, paired with Argo CD and **Argo CD Image Updater** for automated, commit-free GitOps continuous delivery.
-- **Observability Stack**: A lightweight Prometheus monitoring module (`prometheus-server` backed by persistent `ebs-gp3` storage, `kube-state-metrics`, and `prometheus-node-exporter`) tuned for `t3.small` resource limits.
+- **Observability Stack**: A lightweight Prometheus and **Grafana** monitoring module (`prometheus-server`, `kube-state-metrics`, `prometheus-node-exporter`, and Grafana over HTTPS at `https://grafana.dvankevich.pp.ua`, backed by persistent `ebs-gp3` volumes) tuned for `t3.small` resource limits.
 - **Application Workload**: A Django/Wagtail Helm chart (`charts/django-app`) backed by managed AWS RDS PostgreSQL, dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, Horizontal Pod Autoscaling (HPA), and `topologySpreadConstraints`.
 
 ## Project Structure
@@ -17,7 +17,7 @@ my-microservice-project/
 ├── backend.tf                        # S3 remote state backend configuration (native S3 lockfile)
 ├── main.tf                           # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, jenkins, argo_cd, monitoring, and rds
 ├── variables.tf                      # Root input variables (including fallback db_password)
-├── outputs.tf                        # Root outputs (S3, VPC, ECR, EKS, Ingress ELB, Jenkins, Argo CD, Prometheus, and RDS endpoints)
+├── outputs.tf                        # Root outputs (S3, VPC, ECR, EKS, Ingress ELB, Jenkins, Argo CD, Prometheus, Grafana, and RDS)
 ├── .terraform.lock.hcl               # Provider dependency lock file
 ├── Django/                           # Django / Wagtail application source code and CI pipeline definition
 │   ├── .dockerignore
@@ -37,6 +37,7 @@ my-microservice-project/
 │   ├── ARCHITECTURE_UA.md            # Overall AWS & Kubernetes architecture diagram (Ukrainian)
 │   ├── ARGOCD_IMAGE_UPDATER.md       # Guide on eliminating CI commits to main via Argo CD Image Updater
 │   ├── AUTOMATED_TESTING.md          # Documentation for the automated infrastructure test suite
+│   ├── GRAFANA.md                    # Guide to Grafana setup, dashboards, and EKS PromQL visualizations
 │   ├── LOAD_TESTING.md               # Load testing guide and HPA scaling verification scenarios
 │   ├── PROMETHEUS_PROMQL.md          # Practical guide to Prometheus UI, Target Health, and PromQL queries
 │   └── dynamodb_terraform_state.md
@@ -81,10 +82,11 @@ my-microservice-project/
 │   │   ├── variables.tf              # Module input variables (including OIDC and dynamic ECR repository URL)
 │   │   └── versions.tf               # Required Helm and Kubernetes provider version constraints
 │   ├── monitoring/
-│   │   ├── monitoring.tf             # Kubernetes namespace, Prometheus Helm release, and monitoring-extras chart
-│   │   ├── outputs.tf                # Outputs namespace, internal service URL, and port-forward command
+│   │   ├── grafana-values.yaml       # Grafana persistence, Ingress TLS, resource limits, and Prometheus datasource config
+│   │   ├── monitoring.tf             # Kubernetes namespace, Prometheus, Grafana, and monitoring-extras Helm releases
+│   │   ├── outputs.tf                # Outputs namespace, Prometheus service URL, Grafana URL, and password commands
 │   │   ├── values.yaml               # Prometheus server, node-exporter, and kube-state-metrics resource tuning
-│   │   ├── variables.tf              # Release name, namespace, storage class/size, retention, and Ingress options
+│   │   ├── variables.tf              # Release name, namespace, storage class/size, retention, and Grafana variables
 │   │   ├── versions.tf               # Required Helm and Kubernetes provider version constraints
 │   │   └── charts/
 │   │       ├── Chart.yaml            # Local Helm chart metadata for custom scrape targets
@@ -153,8 +155,8 @@ Provisions a private Amazon ECR repository for container images:
 Provisions a managed Amazon EKS cluster in `eu-central-1` running on the public subnets created by the `vpc` module:
 
 - **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (`eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true`.
-- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) using `t3.small` instances (`desired_size = 4`, `min_size = 4`, `max_size = 5`).
-  - **Why `4 x t3.small` nodes:** In AWS EKS, the VPC CNI plugin restricts `t3.small` instances (2 GiB RAM) to **11 pods per node** due to ENI IP address limits. Running 4 `t3.small` nodes (44 pod slots total) provides sufficient capacity for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, horizontally scaled Django pods, Argo CD + Image Updater, the Jenkins controller with dynamic Kaniko agent pods, and the Prometheus monitoring stack without `Too many pods` or memory scheduling bottlenecks.
+- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) using `t3.small` instances (`desired_size = 5`, `min_size = 5`, `max_size = 6`).
+  - **Why `5 x t3.small` nodes:** In AWS EKS, the VPC CNI plugin restricts `t3.small` instances (2 GiB RAM) to **11 pods per node** due to ENI IP address limits. Running 5 `t3.small` nodes (55 pod slots total) provides sufficient capacity and memory headroom for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, horizontally scaled Django pods (up to 6 replicas via HPA), Argo CD + Image Updater, the Jenkins controller with dynamic Kaniko agent pods, and the Prometheus + Grafana observability stack without `Too many pods` or memory scheduling bottlenecks.
   - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. When changing `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
 - **EBS CSI Driver & IRSA (`ebs-csi.tf` & `outputs.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to `kube-system:ebs-csi-controller-sa`, installs the `aws-ebs-csi-driver` EKS add-on, and exports `oidc_provider_arn` and `oidc_provider_url` for downstream IRSA roles.
 - **IAM Permissions:** The node IAM role is attached with `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`.
@@ -164,9 +166,9 @@ Provisions a managed Amazon EKS cluster in `eu-central-1` running on the public 
 Provisions cluster-wide ingress, storage class, and TLS certificate management via the Terraform `helm` and `kubernetes` providers:
 
 - **Multi-AZ `ingress-nginx` (`main.tf`)**: Installs `ingress-nginx` with `replicaCount = 2` and `topologySpreadConstraints` keyed on `topology.kubernetes.io/zone` (`maxSkew = 1`, `whenUnsatisfiable = "ScheduleAnyway"`), sharing a single AWS LoadBalancer without single-AZ failure points.
-- **Cluster StorageClass (`main.tf`)**: Provisions `kubernetes_storage_class_v1.ebs_gp3` (`ebs.csi.aws.com`, `volume_binding_mode = "WaitForFirstConsumer"`, `allow_volume_expansion = true`, encrypted `gp3` volumes) at the cluster level so persistent volumes for Jenkins and Prometheus remain decoupled from application Helm charts.
+- **Cluster StorageClass (`main.tf`)**: Provisions `kubernetes_storage_class_v1.ebs_gp3` (`ebs.csi.aws.com`, `volume_binding_mode = "WaitForFirstConsumer"`, `allow_volume_expansion = true`, encrypted `gp3` volumes) at the cluster level so persistent volumes for Jenkins, Prometheus, and Grafana remain decoupled from application Helm charts.
 - **`cert-manager` & `ClusterIssuer` (`main.tf`)**: Installs `cert-manager` (`crds.enabled = true`) and provisions the production Let's Encrypt `ClusterIssuer` (`letsencrypt-prod`) using HTTP-01 challenge validation via the `nginx` ingress class.
-- **ELB Hostname Output (`outputs.tf`)**: Exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app.dvankevich.pp.ua`, `jenkins.dvankevich.pp.ua`, and `argocd.dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
+- **ELB Hostname Output (`outputs.tf`)**: Exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app.dvankevich.pp.ua`, `jenkins.dvankevich.pp.ua`, `argocd.dvankevich.pp.ua`, and `grafana.dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
 
 ### `jenkins` (`./modules/jenkins`)
 
@@ -193,11 +195,12 @@ Deploys Argo CD and **Argo CD Image Updater** into the `argocd` namespace as the
 
 ### `monitoring` (`./modules/monitoring`)
 
-Deploys Prometheus observability into the `monitoring` namespace via Terraform and Helm:
+Deploys Prometheus and **Grafana** observability into the `monitoring` namespace via Terraform and Helm:
 
-- **Prometheus Stack (`monitoring.tf` & `values.yaml`)**: Installs `prometheus-community/prometheus` with `prometheus-server` (`ClusterIP`, `3d` retention, `5Gi` `ebs-gp3` PersistentVolumeClaim), `kube-state-metrics`, and `prometheus-node-exporter` (DaemonSet across all EKS nodes). `alertmanager` and `prometheus-pushgateway` are disabled by default to fit `t3.small` pod density and memory budgets.
+- **Prometheus Stack (`monitoring.tf` & `values.yaml`)**: Installs `prometheus-community/prometheus` with `prometheus-server` (`ClusterIP`, `3d` retention, `5Gi` `ebs-gp3` PersistentVolumeClaim), `kube-state-metrics`, and `prometheus-node-exporter` (DaemonSet across all 5 EKS nodes). `alertmanager` and `prometheus-pushgateway` are disabled by default to fit `t3.small` pod density and memory budgets.
+- **Grafana Visualization (`monitoring.tf` & `grafana-values.yaml`)**: Installs `grafana/grafana` (`requests: 50m CPU / 128Mi RAM`, `limits: 250m CPU / 256Mi RAM`) backed by a `2Gi` `ebs-gp3` PersistentVolumeClaim (`grafana.db`), exposed over HTTPS (`https://grafana.dvankevich.pp.ua`) via `ingress-nginx` and `cert-manager` (`letsencrypt-prod`), with a generated admin password stored in `grafana-admin-secret` and `Prometheus (main)` pre-configured as the default data source.
 - **Custom Scrape Targets Chart (`monitoring.tf` & `charts/`)**: Deploys a local `monitoring-extras` Helm release capable of registering external or custom endpoints via headless `Service` and `Endpoints` manifests with `prometheus.io/scrape: "true"` annotations.
-- **Secure Local Access (`outputs.tf`)**: Keeps the unauthenticated Prometheus web UI internal (`ClusterIP`) and exports `prometheus_port_forward_command` for local inspection via `kubectl port-forward`.
+- **Outputs (`outputs.tf`)**: Exports `prometheus_service_url`, `prometheus_port_forward_command`, `grafana_url`, and `grafana_admin_password_command`.
 
 ### `rds` (`./modules/rds`)
 
@@ -655,16 +658,16 @@ terraform output -raw ingress_elb_hostname
 dig +short jenkins.dvankevich.pp.ua
 ```
 
-### 2. Ensure Sufficient Cluster Capacity (4 Nodes)
+### 2. Ensure Sufficient Cluster Capacity (5 Nodes)
 
-Ensure `desired_size = 4`, `min_size = 4`, and `max_size = 5` are set in `main.tf` and verify active node capacity via AWS CLI so there are enough pod slots and memory for the Jenkins controller, Argo CD + Image Updater, Prometheus monitoring, and dynamic Kaniko agent pods alongside Django and Multi-AZ `ingress-nginx`:
+Ensure `desired_size = 5`, `min_size = 5`, and `max_size = 6` are set in `main.tf` and verify active node capacity via AWS CLI so there are enough pod slots and memory for the Jenkins controller, Argo CD + Image Updater, Prometheus + Grafana monitoring, and dynamic Kaniko agent pods alongside Django and Multi-AZ `ingress-nginx`:
 
 ```bash
 aws eks update-nodegroup-config \
   --region eu-central-1 \
   --cluster-name eks-cluster-demo \
   --nodegroup-name general \
-  --scaling-config minSize=4,maxSize=5,desiredSize=4
+  --scaling-config minSize=5,maxSize=6,desiredSize=5
 
 kubectl get nodes
 ```
@@ -793,53 +796,57 @@ flowchart TD
 4. **Argo CD Image Updater** (`django-app-updater`) polls Amazon ECR every minute, detects the newest numeric tag (`:<BUILD_NUMBER>`), and updates the `image.tag` Helm parameter directly on the `django-app` `Application` resource (`write-back-method: argocd`).
 5. Argo CD executes a zero-downtime rolling update of `django-app-django` in `wagtail`, which connects to the managed Amazon RDS PostgreSQL database.
 
-## Deploy Prometheus Monitoring (`./modules/monitoring`)
+## Deploy Prometheus & Grafana Monitoring (`./modules/monitoring`)
 
-Prometheus is provisioned via `./modules/monitoring`, providing Kubernetes Service Discovery (`kubernetes_sd_config`), node-level hardware metrics, and Kubernetes object state metrics across all cluster namespaces.
+Prometheus and **Grafana** are provisioned via `./modules/monitoring`, providing Kubernetes Service Discovery (`kubernetes_sd_config`), node-level hardware metrics, Kubernetes object state metrics, and interactive HTTPS dashboards.
 
-### 1. Resource & Storage Configuration (`modules/monitoring/values.yaml`)
+### 1. Resource & Storage Configuration (`values.yaml` & `grafana-values.yaml`)
 
 To run reliably alongside existing workloads on `t3.small` worker nodes (2 GiB RAM, 11 pods per node), the module applies the following configuration:
 
 - **Enabled Components:**
-  - `prometheus-server` (`requests: 100m CPU / 256Mi RAM`, `limits: 500m CPU / 512Mi RAM`) with `3d` TSDB retention.
+  - `prometheus-server` (`requests: 100m CPU / 256Mi RAM`, `limits: 500m CPU / 512Mi RAM`) with `3d` TSDB retention and a `5Gi` `ebs-gp3` PersistentVolumeClaim.
+  - `grafana` (`requests: 50m CPU / 128Mi RAM`, `limits: 250m CPU / 256Mi RAM`) with a `2Gi` `ebs-gp3` PersistentVolumeClaim for persistent dashboards and credentials, HTTPS Ingress (`https://grafana.dvankevich.pp.ua`), and `Prometheus (main)` pre-configured as the default data source.
   - `kube-state-metrics` (`requests: 25m CPU / 64Mi RAM`, `limits: 100m CPU / 128Mi RAM`) for Deployment, Pod, HPA, and PVC state metrics.
   - `prometheus-node-exporter` (`requests: 25m CPU / 32Mi RAM`, `limits: 100m CPU / 64Mi RAM`) deployed as a DaemonSet across all worker nodes.
 - **Disabled Optional Components:** `alertmanager` and `prometheus-pushgateway` are disabled (`enabled: false`) to save pod slots and memory.
-- **Persistent Storage:** Attaches a `5Gi` encrypted EBS volume (`storageClass: "ebs-gp3"`) to `prometheus-server` so time-series data persists across pod restarts.
 
-### 2. Provision Prometheus via Terraform
+### 2. Configure DNS for Grafana
 
-Ensure `module.cluster_addons` has provisioned the `ebs-gp3` `StorageClass` and the cluster has 4 active `t3.small` nodes, then apply `module.monitoring`:
+In your DNS provider for `dvankevich.pp.ua`, create a `CNAME` record for `grafana` pointing to the shared `ingress_elb_hostname`:
 
 ```bash
-terraform init
+terraform output -raw ingress_elb_hostname
+dig +short grafana.dvankevich.pp.ua
+```
+
+### 3. Provision Prometheus & Grafana via Terraform
+
+Ensure `module.cluster_addons` has provisioned the `ebs-gp3` `StorageClass` and the cluster has 5 active `t3.small` nodes, then apply `module.monitoring`:
+
+```bash
+terraform init -upgrade
 terraform apply -target=module.cluster_addons -target=module.monitoring
 ```
 
-### 3. Verify Storage, Pods, and Services
+### 4. Verify Storage, Pods, TLS Certificate, and Access Grafana
 
-Confirm that the `prometheus-server` PVC is `Bound` to an EBS volume, `prometheus-server` reaches `2/2 Running`, and `node-exporter` runs on all 4 nodes:
+Confirm that both PVCs (`prometheus-server` and `grafana`) are `Bound` to EBS volumes, `grafana` reaches `1/1 Running`, `node-exporter` runs on all 5 nodes, and `grafana-tls` reaches `READY: True`:
 
 ```bash
 kubectl get sc ebs-gp3
-kubectl get pvc,pods,svc -n monitoring -o wide
+kubectl get pvc,pods,svc,ingress,certificate -n monitoring -o wide
 ```
 
-### 4. Access the Prometheus Web UI & Inspect Targets
-
-Because Prometheus does not include built-in authentication, `prometheus-server` is exposed as a `ClusterIP` service (`ingress_enabled = false` by default). Forward port `9090` to your local machine:
+Retrieve the generated Grafana administrator password and sign in at **`https://grafana.dvankevich.pp.ua`** (`admin`):
 
 ```bash
-$(terraform output -raw prometheus_port_forward_command)
+kubectl get secret -n monitoring grafana-admin-secret -o jsonpath='{.data.admin-password}' | base64 -d; echo
 ```
 
-Open **`http://localhost:9090`** in your browser:
+*(To inspect Prometheus directly without exposing it externally, run `$(terraform output -raw prometheus_port_forward_command)` and open `http://localhost:9090`.)*
 
-1. Navigate to **Status → Target health** to verify that `kubernetes-apiservers`, `kubernetes-nodes` (all 4 `t3.small` nodes in `eu-central-1a/b/c`), `kubernetes-nodes-cadvisor`, and `kubernetes-service-endpoints` show **`UP`**.
-2. Navigate to **Status → Service discovery** to inspect live Kubernetes metadata labels (`_meta_kubernetes_namespace`, `_meta_kubernetes_pod_label_app`, etc.) discovered automatically via `kubernetes_sd_config`.
-
-> **PromQL & Monitoring Guide:** For practical PromQL queries covering node memory/pod density limits, Django HPA scaling, Jenkins Kaniko memory spikes, and custom application `/metrics` scraping, see [`docs/PROMETHEUS_PROMQL.md`](./docs/PROMETHEUS_PROMQL.md).
+> **Grafana & PromQL Guides:** For step-by-step instructions on importing EKS dashboards (`1860`, `15757`, `15760`) and building custom visualizations in Grafana, see [`docs/GRAFANA.md`](./docs/GRAFANA.md). For raw PromQL queries and Prometheus Service Discovery details, see [`docs/PROMETHEUS_PROMQL.md`](./docs/PROMETHEUS_PROMQL.md).
 
 ## How to Verify the Jenkins Job
 

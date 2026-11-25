@@ -125,3 +125,14 @@ output "prometheus_port_forward_command" {
   description = "Команда для відкриття веб-інтерфейсу Prometheus"
   value       = module.monitoring.port_forward_command
 }
+
+output "grafana_url" {
+  description = "HTTPS URL веб-інтерфейсу Grafana"
+  value       = module.monitoring.grafana_url
+}
+
+output "grafana_admin_password_command" {
+  description = "Команда для отримання пароля адміністратора Grafana"
+  value       = module.monitoring.grafana_admin_password_command
+}
+

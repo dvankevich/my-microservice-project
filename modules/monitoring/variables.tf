@@ -51,3 +51,21 @@ variable "cluster_issuer_name" {
   type        = string
   default     = "letsencrypt-prod"
 }
+
+variable "grafana_enabled" {
+  description = "Чи розгортати Grafana разом із Prometheus"
+  type        = bool
+  default     = true
+}
+
+variable "grafana_host" {
+  description = "Доменне ім'я для веб-інтерфейсу Grafana"
+  type        = string
+  default     = "grafana.dvankevich.pp.ua"
+}
+
+variable "grafana_ingress_enabled" {
+  description = "Чи відкривати Grafana назовні через ingress-nginx"
+  type        = bool
+  default     = true
+}

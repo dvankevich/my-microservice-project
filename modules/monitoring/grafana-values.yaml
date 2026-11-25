@@ -1,0 +1,53 @@
+replicas: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  type: pvc
+  storageClassName: "${storage_class}"
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+
+# Вимикаємо тестові поди, щоб не займати слоти на нодах
+testFramework:
+  enabled: false
+
+# Використовуємо заздалегідь створений Kubernetes Secret замість пароля у values
+admin:
+  existingSecret: "grafana-admin-secret"
+  userKey: "admin-user"
+  passwordKey: "admin-password"
+
+ingress:
+  enabled: ${ingress_enabled}
+  ingressClassName: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - ${grafana_host}
+  path: /
+  pathType: Prefix
+  tls:
+    - secretName: grafana-tls
+      hosts:
+        - ${grafana_host}
+
+# Автоматичне підключення внутрішнього Prometheus як Data Source
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus (main)
+        type: prometheus
+        url: http://prometheus-server.${namespace}.svc.cluster.local
+        access: proxy
+        isDefault: true
+        editable: true

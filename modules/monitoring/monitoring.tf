@@ -43,3 +43,49 @@ resource "helm_release" "monitoring_extras" {
 
   depends_on = [helm_release.prometheus]
 }
+
+# Grafana
+resource "random_password" "grafana_admin" {
+  count   = var.grafana_enabled ? 1 : 0
+  length  = 20
+  special = false
+}
+
+resource "kubernetes_secret_v1" "grafana_admin" {
+  count = var.grafana_enabled ? 1 : 0
+
+  metadata {
+    name      = "grafana-admin-secret"
+    namespace = kubernetes_namespace_v1.monitoring.metadata[0].name
+  }
+
+  data = {
+    admin-user     = "admin"
+    admin-password = random_password.grafana_admin[0].result
+  }
+}
+
+resource "helm_release" "grafana" {
+  count = var.grafana_enabled ? 1 : 0
+
+  name             = "grafana"
+  namespace        = kubernetes_namespace_v1.monitoring.metadata[0].name
+  repository       = "https://grafana.github.io/helm-charts"
+  chart            = "grafana"
+  create_namespace = false
+  timeout          = 600
+
+  values = [
+    templatefile("${path.module}/grafana-values.yaml", {
+      storage_class   = var.storage_class_name
+      ingress_enabled = var.grafana_ingress_enabled
+      grafana_host    = var.grafana_host
+      namespace       = var.namespace
+    })
+  ]
+
+  depends_on = [
+    helm_release.prometheus,
+    kubernetes_secret_v1.grafana_admin
+  ]
+}
