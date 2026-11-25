@@ -1,6 +1,6 @@
-# AWS & Kubernetes Infrastructure Architecture (`lesson-7`)
+# AWS & Kubernetes Infrastructure Architecture
 
-This document provides a visual diagram and architectural overview of the network topology, AWS cloud resources (`eu-central-1`), and workloads running inside the Amazon EKS cluster, provisioned and managed via Terraform, Helm, Jenkins, and Argo CD.
+This document provides a visual diagram and architectural overview of the network topology, AWS cloud resources (`eu-central-1`), GitOps CI/CD pipeline, and workloads running inside the Amazon EKS cluster, provisioned and managed via Terraform, Helm, Jenkins, and Argo CD.
 
 ## Overall Infrastructure & Network Diagram
 
@@ -9,7 +9,7 @@ flowchart TB
     %% ==================== EXTERNAL & GLOBAL ====================
     subgraph External ["External & SaaS Services"]
         Users(["End Users / Administrator<br/>HTTPS / HTTP"])
-        Dev(["Developer<br/>git push"])
+        Dev(["Developer / Operator<br/>git push & kubectl"])
         DNS["DNS Provider (dvankevich.pp.ua)<br/>CNAME: django-app, jenkins, argocd"]
         LetsEncrypt["Let's Encrypt ACME<br/>(HTTP-01 TLS)"]
         GitHub[("GitHub Repository<br/>dvankevich/my-microservice-project")]
@@ -41,11 +41,12 @@ flowchart TB
                 AppELB["AWS LoadBalancer (L4 Direct)<br/>django-app-django (Port 80)"]
 
                 %% EKS Cluster
-                subgraph EKS ["Amazon EKS Cluster: eks-cluster-demo (3x t3.small Worker Nodes across 3 AZs)"]
+                subgraph EKS ["Amazon EKS Cluster: eks-cluster-demo (4x t3.small Worker Nodes across 3 AZs, min: 4 / max: 5)"]
                     direction TB
 
-                    subgraph NS_Sys ["Namespace: kube-system"]
+                    subgraph NS_Sys ["Namespace: kube-system & Cluster Storage"]
                         SysAddons["CoreDNS • VPC CNI • kube-proxy<br/>AWS EBS CSI Driver (IRSA) • Metrics Server"]
+                        StorageCls["StorageClass: ebs-gp3<br/>(Terraform module.cluster_addons)"]
                     end
 
                     subgraph NS_Ingress ["Namespaces: ingress-nginx & cert-manager"]
@@ -58,23 +59,29 @@ flowchart TB
                         DjangoSvc["Service: django-app-django<br/>(LoadBalancer / ClusterIP :80 -> :8000)"]
                         HPA["HorizontalPodAutoscaler<br/>2–6 Replicas (CPU > 70%)"]
                         DjangoPods["Deployment: django-app-django<br/>(2+ Replicas, Node Spread)<br/>InitContainer: wait-for-postgres"]
-                        CfgSec["ConfigMap (django-app-config)<br/>Secret (django-app-secret, Prune=false)"]
+                        CfgSec["ConfigMap (django-app-config)<br/>Secret (django-app-secret)"]
                     end
 
                     subgraph NS_Jenkins ["Namespace: jenkins (CI)"]
                         JenkinsIng["Ingress: jenkins.dvankevich.pp.ua (TLS)"]
-                        JenkinsCtrl["Jenkins Controller (jenkins-0)<br/>JCasC + seed-job"]
+                        JenkinsCtrl["Jenkins Controller (jenkins-0)<br/>JCasC + seed-job (Django/Jenkinsfile)"]
                         JenkinsSA["ServiceAccount: jenkins-sa (IRSA)"]
                         KanikoPod["Ephemeral Pod Agent<br/>(jnlp + Kaniko + Git)"]
                     end
 
                     subgraph NS_Argo ["Namespace: argocd (GitOps CD)"]
                         ArgoIng["Ingress: argocd.dvankevich.pp.ua (TLS)"]
-                        ArgoCtrl["Argo CD Server & Controller<br/>Application: django-app (createSecrets=false)"]
+                        ArgoCtrl["Argo CD Server & Controller<br/>Application: django-app (charts/django-app)"]
+                    end
+
+                    subgraph NS_Mon ["Namespace: monitoring (Observability)"]
+                        PromSrv["Prometheus Server (ClusterIP :80)<br/>Retention: 3d • kubernetes_sd_config"]
+                        PromExporters["kube-state-metrics (1 Replica)<br/>node-exporter (DaemonSet: 4 Nodes)<br/>monitoring-extras Helm Chart"]
                     end
                 end
 
-                EBS[("AWS EBS Volume (gp3, 10Gi)<br/>PVC: jenkins-home")]
+                EBS_Jenkins[("AWS EBS Volume (gp3, 10Gi)<br/>PVC: jenkins-home")]
+                EBS_Prom[("AWS EBS Volume (gp3, 5Gi)<br/>PVC: prometheus-server")]
             end
 
             %% Private Subnets
@@ -114,18 +121,26 @@ flowchart TB
     DjangoPods -->|"TCP 5432 (Internal VPC)"| RDSSG --> RDS
 
     %% Storage & IAM
-    JenkinsCtrl <-->|"Mount /var/jenkins_home"| EBS
+    StorageCls -.->|"Dynamic Provisioning"| EBS_Jenkins
+    StorageCls -.->|"Dynamic Provisioning"| EBS_Prom
+    JenkinsCtrl <-->|"Mount /var/jenkins_home"| EBS_Jenkins
+    PromSrv <-->|"Mount TSDB /data"| EBS_Prom
     IAM -.->|"Assume Role (OIDC)"| JenkinsSA
     IAM -.->|"Assume Role (OIDC)"| SysAddons
+
+    %% Monitoring Flows
+    Dev -.->|"kubectl port-forward 9090:80"| PromSrv
+    PromSrv -->|"Scrape Metrics"| PromExporters
+    PromSrv -.->|"Scrape API, Nodes & Pods"| EKS
 
     %% CI/CD GitOps Loop
     Dev -->|"1. Push code (main)"| GitHub
     GitHub -->|"2. Webhook POST /github-webhook/"| JenkinsCtrl
     JenkinsCtrl -->|"3. Spawn Agent"| KanikoPod
     JenkinsSA -.->|"4. IRSA Auth"| KanikoPod
-    KanikoPod -->|"5. Build & Push :tag"| ECR
-    KanikoPod -->|"6. Update values.yaml [skip ci]"| GitHub
-    ArgoCtrl -->|"7. Poll lesson-7/charts/django-app"| GitHub
+    KanikoPod -->|"5. Build Django/Dockerfile & Push :tag"| ECR
+    KanikoPod -->|"6. Update charts/django-app/values.yaml [skip ci]"| GitHub
+    ArgoCtrl -->|"7. Poll charts/django-app"| GitHub
     ArgoCtrl -->|"8. Automated Helm Sync"| NS_Wagtail
     DjangoPods -.->|"9. Pull Image via NAT/IGW"| ECR
     PrivateSubnets -.->|"Outbound via NAT"| NAT
@@ -140,29 +155,39 @@ flowchart TB
     classDef db fill:#E6FFFA,stroke:#2B6CB0,stroke-width:2px;
     classDef ext fill:#F7FAFC,stroke:#4A5568;
 
-    class S3,ECR,IAM,IngressELB,AppELB,IGW,NAT,EBS aws;
+    class S3,ECR,IAM,IngressELB,AppELB,IGW,NAT,EBS_Jenkins,EBS_Prom aws;
     class VPC vpc;
     class PublicSubnets pubSubnet;
     class PrivateSubnets privSubnet;
     class EKS eks;
-    class NS_Sys,NS_Ingress,NS_Wagtail,NS_Jenkins,NS_Argo ns;
+    class NS_Sys,NS_Ingress,NS_Wagtail,NS_Jenkins,NS_Argo,NS_Mon ns;
     class RDS,RDSSG db;
     class Users,Dev,DNS,LetsEncrypt,GitHub ext;
 ```
 
 ## Key Architectural Decisions
 
-### 1. Network Isolation (VPC `10.0.0.0/16`)
+### 1. Unified Root-Level Repository Layout
 
-* **Public Subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`):** Host the AWS LoadBalancers, NAT Gateway, and EKS worker nodes (`3 x t3.small`) distributed across three Availability Zones (`eu-central-1a`, `1b`, `1c`).
-* **Private Subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`):** Isolate the managed Amazon RDS PostgreSQL database (`publicly_accessible = false`). Inbound TCP traffic on port `5432` is restricted exclusively to the VPC CIDR block (`10.0.0.0/16`) via `wagtail-db-sg`.
+* **Infrastructure as Code (`main.tf`, `modules/`, `charts/`):** All Terraform modules (`s3-backend`, `vpc`, `ecr`, `eks`, `rds`, `cluster-addons`, `jenkins`, `argo-cd`, `monitoring`) and Helm charts reside directly at the repository root, backed by remote S3 state (`tfstate-bucket-lesson5`) with native S3 state locking (`use_lockfile = true`).
+* **Application Code (`Django/`):** The Django/Wagtail application, `Dockerfile`, `docker-compose.yml`, and `Jenkinsfile` are consolidated inside `Django/`.
 
-### 2. Traffic Routing, High Availability & TLS
+### 2. Network Isolation (VPC `10.0.0.0/16`)
 
-* **Shared L7 Ingress (`ingress-nginx` + `cert-manager`):** Routes HTTPS traffic for all three subdomains (`django-app`, `jenkins`, `argocd`) through a single AWS LoadBalancer with automated TLS certificate issuance and renewal via Let's Encrypt (`letsencrypt-prod`).
+* **Public Subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`):** Host the AWS LoadBalancers, shared NAT Gateway, and EKS worker nodes (`4 x t3.small`, auto-scaling `4–5` nodes) distributed across three Availability Zones (`eu-central-1a`, `1b`, `1c`).
+* **Private Subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`):** Isolate the managed Amazon RDS PostgreSQL 16 database (`publicly_accessible = false`). Inbound TCP traffic on port `5432` is restricted exclusively to the VPC CIDR block (`10.0.0.0/16`) via `wagtail-db-sg`.
+
+### 3. Traffic Routing, High Availability & TLS
+
+* **Shared L7 Ingress (`ingress-nginx` + `cert-manager`):** Routes HTTPS traffic for `django-app`, `jenkins`, and `argocd` subdomains through a single AWS LoadBalancer with automated TLS certificate issuance and renewal via Let's Encrypt (`letsencrypt-prod`).
 * **Workload Distribution (`topologySpreadConstraints`):** Both `ingress-nginx-controller` replicas (spread across Availability Zones) and `django-app-django` pods (spread across worker nodes) avoid single-node points of failure and scale dynamically via HPA (`2–6` replicas).
 
-### 3. Secretless GitOps CI/CD
+### 4. Cluster Storage & Lightweight Observability (`module.monitoring`)
+
+* **Cluster-Scoped `ebs-gp3` StorageClass:** Provisioned by Terraform inside `module.cluster_addons` (`ebs.csi.aws.com`, `WaitForFirstConsumer`, encrypted `gp3`) so persistent volumes for Jenkins (`10Gi`) and Prometheus (`5Gi`) remain independent of application chart toggles.
+* **Prometheus Stack (`namespace: monitoring`):** Deploys `prometheus-server` (`3d` retention, `ClusterIP` exposed locally via `kubectl port-forward`), `kube-state-metrics`, and `prometheus-node-exporter` across all worker nodes, with Alertmanager and Pushgateway disabled to optimize pod density and memory usage on `t3.small` instances.
+
+### 5. Secretless GitOps CI/CD
 
 * **IRSA (IAM Roles for Service Accounts):** Ephemeral Jenkins Kaniko agents and the `aws-ebs-csi-driver` authenticate to AWS APIs via the EKS OIDC provider without static `AWS_ACCESS_KEY_ID` credentials.
-* **Secret Isolation in Argo CD:** The `django-app` `Application` syncs with `createSecrets=false`, while the pre-provisioned `django-app-secret` in `wagtail` is protected with `argocd.argoproj.io/sync-options=Prune=false`.
+* **Secret Isolation in Argo CD:** The `django-app` `Application` syncs from `charts/django-app` with `createSecrets=false`, keeping runtime secrets decoupled from Git.
