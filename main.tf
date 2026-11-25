@@ -84,9 +84,13 @@ module "jenkins" {
 
 # Підключаємо модуль Argo CD (GitOps CD)
 module "argo_cd" {
-  source      = "./modules/argo-cd"
-  namespace   = "argocd"
-  argocd_host = "argocd.dvankevich.pp.ua"
+  source             = "./modules/argo-cd"
+  cluster_name       = module.eks.eks_cluster_name
+  oidc_provider_arn  = module.eks.oidc_provider_arn
+  oidc_provider_url  = module.eks.oidc_provider_url
+  namespace          = "argocd"
+  argocd_host        = "argocd.dvankevich.pp.ua"
+  ecr_repository_url = module.ecr.repository_url
 
   depends_on = [
     module.eks,

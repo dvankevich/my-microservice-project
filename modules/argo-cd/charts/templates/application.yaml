@@ -5,6 +5,10 @@ kind: Application
 metadata:
   name: {{ .name }}
   namespace: {{ $.Release.Namespace }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

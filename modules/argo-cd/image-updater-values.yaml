@@ -1,0 +1,21 @@
+extraArgs:
+  - "--interval"
+  - "1m"
+
+config:
+  registries:
+    - name: AWS ECR
+      api_url: https://${ecr_registry}
+      prefix: ${ecr_registry}
+      ping: no
+      credentials: pullsecret:${namespace}/ecr-credentials
+      credsexpire: 10h
+      default: true
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi

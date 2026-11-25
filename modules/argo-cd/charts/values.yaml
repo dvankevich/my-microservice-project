@@ -1,6 +1,13 @@
 applications:
   - name: django-app
     project: default
+    annotations:
+      argocd-image-updater.argoproj.io/image-list: "django=${ecr_repository_url}"
+      argocd-image-updater.argoproj.io/django.update-strategy: "newest-build"
+      argocd-image-updater.argoproj.io/django.allow-tags: "regexp:^[0-9]+$"
+      argocd-image-updater.argoproj.io/django.helm.image-name: "image.repository"
+      argocd-image-updater.argoproj.io/django.helm.image-tag: "image.tag"
+      argocd-image-updater.argoproj.io/write-back-method: "argocd"
     source:
       repoURL: https://github.com/dvankevich/my-microservice-project.git
       path: charts/django-app

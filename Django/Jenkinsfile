@@ -44,36 +44,19 @@ spec:
         limits:
           cpu: "1000m"
           memory: "1450Mi"
-    - name: git
-      image: alpine/git:latest
-      imagePullPolicy: IfNotPresent
-      command:
-        - sleep
-      args:
-        - 99d
-      resources:
-        requests:
-          cpu: "50m"
-          memory: "32Mi"
-        limits:
-          cpu: "200m"
-          memory: "128Mi"
 """
     }
-  }
-
-  environment {
-    COMMIT_EMAIL = "jenkins@dvankevich.pp.ua"
-    COMMIT_NAME  = "Jenkins CI"
   }
 
   stages {
     stage('Verify Environment') {
       steps {
         script {
-          def lastCommit = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
-          if (lastCommit.contains('[skip ci]')) {
-            echo "Коміт містить [skip ci], пропускаємо повторну збірку."
+          def commitSubject = sh(script: "git log -1 --pretty=%s", returnStdout: true).trim()
+          def isManualBuild = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause').size() > 0
+
+          if (!isManualBuild && commitSubject.contains('[skip ci]')) {
+            echo "Коміт містить [skip ci], пропускаємо збірку."
             currentBuild.result = 'NOT_BUILT'
             return
           }
@@ -102,32 +85,6 @@ spec:
               --use-new-run \
               --compressed-caching=false
           '''
-        }
-      }
-    }
-
-    stage('Update Chart Tag in Git') {
-      when {
-        expression { currentBuild.result != 'NOT_BUILT' }
-      }
-      steps {
-        container('git') {
-          withCredentials([usernamePassword(credentialsId: 'github-token', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PAT')]) {
-            sh '''
-              rm -rf /tmp/repo
-              git clone https://${GIT_USERNAME}:${GIT_PAT}@github.com/dvankevich/my-microservice-project.git /tmp/repo
-              cd /tmp/repo
-
-              sed -i 's|^  tag: .*|  tag: "'"${BUILD_NUMBER}"'"|' charts/django-app/values.yaml
-
-              git config user.email "${COMMIT_EMAIL}"
-              git config user.name "${COMMIT_NAME}"
-
-              git add charts/django-app/values.yaml
-              git commit -m "chore(cd): update django-app image tag to ${BUILD_NUMBER} [skip ci]"
-              git push origin main
-            '''
-          }
         }
       }
     }
