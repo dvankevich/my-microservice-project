@@ -1,5 +1,7 @@
 from .base import *
 
+from .s3 import apply_s3_media_storage
+
 DEBUG = False
 
 # ManifestStaticFilesStorage is recommended in production, to prevent
@@ -12,3 +14,5 @@ try:
     from .local import *
 except ImportError:
     pass
+
+apply_s3_media_storage(globals())

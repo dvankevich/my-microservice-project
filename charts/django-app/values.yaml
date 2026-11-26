@@ -56,6 +56,18 @@ postgres:
       cpu: 250m
       memory: 256Mi
 
+# ServiceAccount з IRSA. ARN має збігатися з output media_s3_role_arn.
+serviceAccount:
+  create: true
+  name: django
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::250284066941:role/eks-cluster-demo-django-media"
+
+# Бакет зображень і документів. Назва має збігатися з module.media_s3 у main.tf.
+media:
+  bucket: "wagtail-media-lesson5"
+  region: "eu-central-1"
+
 # Змінні середовища, перенесені з Django/.env та docker-compose.yml
 env:
   DJANGO_SETTINGS_MODULE: "mysite.settings.docker"
@@ -67,6 +79,10 @@ env:
   POSTGRES_USER: "wagtail_user"
   POSTGRES_HOST: "wagtail-db.cxkcuswm8ozq.eu-central-1.rds.amazonaws.com"
   POSTGRES_PORT: "5432"
+  AWS_STORAGE_BUCKET_NAME: "{{ .Values.media.bucket }}"
+  AWS_S3_REGION_NAME: "{{ .Values.media.region }}"
+  AWS_S3_CUSTOM_DOMAIN: "{{ .Values.media.bucket }}.s3.{{ .Values.media.region }}.amazonaws.com"
+  AWS_QUERYSTRING_AUTH: "False"
 
 # Чутливі дані (підуть у Secret, реальні значення передаємо при деплої)
 createSecrets: true

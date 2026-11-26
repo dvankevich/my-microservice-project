@@ -2,6 +2,8 @@ from .base import *
 import os
 from dotenv import load_dotenv
 
+from .s3 import apply_s3_media_storage
+
 load_dotenv()
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -34,3 +36,5 @@ try:
     from .local import *
 except ImportError:
     pass
+
+apply_s3_media_storage(globals())

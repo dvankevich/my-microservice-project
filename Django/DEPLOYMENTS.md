@@ -152,11 +152,22 @@ Site is available at http://localhost (via Nginx).
 | `POSTGRES_PASSWORD` | Database password     | `wagtail`                      |
 | `POSTGRES_HOST`     | Database host         | `db` or `host.docker.internal` |
 | `POSTGRES_PORT`     | Database port         | `5432`                         |
+| `AWS_STORAGE_BUCKET_NAME` | S3 bucket for images and documents. Empty keeps files on local disk | `wagtail-media-lesson5` |
+| `AWS_S3_REGION_NAME` | Bucket region | `eu-central-1` |
+| `AWS_S3_CUSTOM_DOMAIN` | Public host used in media URLs. Empty builds `<bucket>.s3.<region>.amazonaws.com` | |
+| `AWS_QUERYSTRING_AUTH` | `True` adds expiring signatures to media URLs | `False` |
 
 ### Notes
 
 - The same image is used for dev, staging, and production.
 - Only environment variables differ between environments.
-- Media files are stored in a named volume (`media_data`) when using Docker Compose, or in a bind mount when using a single container.
+- On EKS, images and documents are stored in the S3 bucket `wagtail-media-lesson5`. Pods write through IRSA (`ServiceAccount: django`). Direct object URLs are public. Static CSS and JavaScript stay in the image.
+- Local Docker keeps the `media_data` volume. Files go to S3 only when `AWS_STORAGE_BUCKET_NAME` is set. Local uploads then need AWS credentials in the environment (`aws configure` or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). Do not put those keys in the Helm chart.
+- Copy existing local media once, from the Django directory:
+
+  ```bash
+  aws s3 sync media/ s3://wagtail-media-lesson5/
+  ```
+
 - Migrations run automatically on container start via `entrypoint.sh`.
 - Superuser must be created manually once.

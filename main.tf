@@ -121,6 +121,25 @@ locals {
   )
 }
 
+# Бакет медіа Wagtail і IRSA-роль для ServiceAccount django у namespace wagtail
+module "media_s3" {
+  source = "./modules/media-s3"
+
+  bucket_name       = "wagtail-media-lesson5"
+  cluster_name      = module.eks.eks_cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  namespace         = "wagtail"
+  service_account   = "django"
+  cors_allowed_origins = [
+    "https://django-app.dvankevich.pp.ua",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+  ]
+
+  depends_on = [module.eks]
+}
+
 module "rds" {
   source = "./modules/rds"
 

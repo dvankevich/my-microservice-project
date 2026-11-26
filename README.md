@@ -6,7 +6,7 @@ This repository contains Terraform configurations, Helm charts, and the Django/W
 - **Cluster Add-ons & Storage**: Multi-AZ `ingress-nginx` controller, `cert-manager` with a production Let's Encrypt `ClusterIssuer`, and a cluster-scoped encrypted `ebs-gp3` `StorageClass`.
 - **GitOps CI/CD Pipeline**: A declarative Jenkins CI server using Kaniko and IRSA for passwordless ECR builds, paired with Argo CD and **Argo CD Image Updater** for automated, commit-free GitOps continuous delivery.
 - **Observability Stack**: A lightweight Prometheus and **Grafana** monitoring module (`prometheus-server`, `kube-state-metrics`, `prometheus-node-exporter`, and Grafana over HTTPS at `https://grafana.dvankevich.pp.ua`, backed by persistent `ebs-gp3` volumes) tuned for `t3.small` resource limits.
-- **Application Workload**: A Django/Wagtail Helm chart (`charts/django-app`) backed by managed AWS RDS PostgreSQL, dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, Horizontal Pod Autoscaling (HPA), and `topologySpreadConstraints`.
+- **Application Workload**: A Django/Wagtail Helm chart (`charts/django-app`) backed by managed AWS RDS PostgreSQL, an S3 bucket for images and documents (`wagtail-media-lesson5`, written via IRSA), dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, Horizontal Pod Autoscaling (HPA), and `topologySpreadConstraints`.
 
 ## Project Structure
 
@@ -15,9 +15,9 @@ my-microservice-project/
 ├── .gitignore                        # Ignores Terraform state/cache, IDE files, and local secrets.yaml files
 ├── README.md                         # Main infrastructure, database, CI/CD, and monitoring documentation
 ├── backend.tf                        # S3 remote state backend configuration (native S3 lockfile)
-├── main.tf                           # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, jenkins, argo_cd, monitoring, and rds
+├── main.tf                           # Root module wiring s3_backend, vpc, ecr, eks, cluster_addons, jenkins, argo_cd, monitoring, media_s3, and rds
 ├── variables.tf                      # Root input variables (including fallback db_password)
-├── outputs.tf                        # Root outputs (S3, VPC, ECR, EKS, Ingress ELB, Jenkins, Argo CD, Prometheus, Grafana, and RDS)
+├── outputs.tf                        # Root outputs (S3, VPC, ECR, EKS, Ingress ELB, Jenkins, Argo CD, Prometheus, Grafana, media S3, and RDS)
 ├── .terraform.lock.hcl               # Provider dependency lock file
 ├── Django/                           # Django / Wagtail application source code and CI pipeline definition
 │   ├── .dockerignore
@@ -104,6 +104,12 @@ my-microservice-project/
 │   │   ├── outputs.tf                # Outputs S3 bucket name
 │   │   ├── s3.tf                     # S3 state bucket, versioning, and ownership controls
 │   │   └── variables.tf              # Bucket name variable
+│   ├── media-s3/
+│   │   ├── s3.tf                     # Private-write public-read media bucket, encryption, versioning, CORS
+│   │   ├── iam.tf                    # IRSA role for the Wagtail ServiceAccount
+│   │   ├── outputs.tf                # Bucket name, domain, and role ARN
+│   │   ├── variables.tf              # Bucket, OIDC, namespace, and CORS inputs
+│   │   └── versions.tf               # Required Terraform and AWS provider version constraints
 │   └── vpc/
 │       ├── outputs.tf
 │       ├── routes.tf
@@ -115,7 +121,8 @@ my-microservice-project/
         ├── values.yaml               # Public application configuration (default image tag, RDS host, Service, Ingress, HPA)
         ├── secrets.yaml.example      # Template for sensitive credentials (committed to Git)
         └── templates/
-            ├── configmap.yaml        # Non-sensitive environment variables (including POSTGRES_HOST and CSRF_TRUSTED_ORIGINS)
+            ├── serviceaccount.yaml  # ServiceAccount django with the media IRSA role annotation
+            ├── configmap.yaml        # Non-sensitive environment variables (including POSTGRES_HOST, CSRF_TRUSTED_ORIGINS, and the media bucket)
             ├── secret.yaml           # Conditional Kubernetes Secret (controlled via createSecrets flag)
             ├── deployment.yaml       # Django/Wagtail Deployment with PostgreSQL readiness initContainer and topologySpreadConstraints
             ├── postgres.yaml         # Optional in-cluster PostgreSQL 16 Deployment and ClusterIP Service (postgres.enabled)
@@ -135,6 +142,15 @@ Provisions remote state storage in AWS using native S3 backend locking:
 
 - **S3 Bucket (`s3.tf`)**: Creates the state bucket (`tfstate-bucket-lesson5`), enables **Versioning** to preserve state history, and enforces `BucketOwnerEnforced` object ownership.
 - **State Locking**: Locking is handled natively by the S3 backend via `use_lockfile = true` in `backend.tf`. No separate DynamoDB table is required or provisioned.
+
+### `media-s3` (`./modules/media-s3`)
+
+Stores Wagtail images and documents for every replica of `django-app`:
+
+- **Bucket (`s3.tf`)**: Creates `wagtail-media-lesson5` with versioning, AES-256 encryption, and `BucketOwnerEnforced` ownership. A bucket policy allows public `s3:GetObject`. Listing stays private. CORS allows the site and local admin origins to read images for the focal-point editor.
+- **IRSA (`iam.tf`)**: Role `eks-cluster-demo-django-media` can be assumed only by `system:serviceaccount:wagtail:django`. It can list the bucket and get, put, and delete objects. Pods do not receive static access keys.
+
+The Helm values `media.bucket` and `serviceAccount.annotations` must match this module. `terraform output media_s3_role_arn` prints the role ARN.
 
 ### `vpc` (`./modules/vpc`)
 

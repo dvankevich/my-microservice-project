@@ -1,6 +1,8 @@
 import os
 from .base import *
 
+from .s3 import apply_s3_media_storage
+
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 SECRET_KEY = os.environ["SECRET_KEY"]
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "").split(",")
@@ -35,3 +37,5 @@ CSRF_TRUSTED_ORIGINS = [
 
 # Довіряємо заголовку від ingress-nginx, що запит прийшов по HTTPS
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+apply_s3_media_storage(globals())

@@ -59,6 +59,10 @@ POSTGRES_PORT=5432
 
 DEBUG=True
 SECRET_KEY=your-secret-key-here
+
+# Optional. Leave unset to keep images and documents in ./media
+# AWS_STORAGE_BUCKET_NAME=wagtail-media-lesson5
+# AWS_S3_REGION_NAME=eu-central-1
 ```
 
 ## 4. Configure the database

@@ -22,6 +22,7 @@ flowchart TB
         %% AWS Regional Managed Services
         subgraph AWSManaged ["AWS Regional Services (Outside VPC)"]
             S3[("Amazon S3<br/>tfstate-bucket-lesson5<br/>Terraform State + S3 Lockfile")]
+            MediaS3[("Amazon S3<br/>wagtail-media-lesson5<br/>Wagtail images and documents")]
             ECR[("Amazon ECR<br/>lesson-5-ecr<br/>Container Images")]
             IAM["AWS IAM & EKS OIDC<br/>IRSA Roles (EBS CSI, Kaniko)"]
         end
@@ -127,6 +128,9 @@ flowchart TB
     PromSrv <-->|"Mount TSDB /data"| EBS_Prom
     IAM -.->|"Assume Role (OIDC)"| JenkinsSA
     IAM -.->|"Assume Role (OIDC)"| SysAddons
+    IAM -.->|"Assume Role (OIDC)"| DjangoPods
+    DjangoPods -->|"IRSA read/write"| MediaS3
+    Users -->|"HTTPS GET media"| MediaS3
 
     %% Monitoring Flows
     Dev -.->|"kubectl port-forward 9090:80"| PromSrv
@@ -155,7 +159,7 @@ flowchart TB
     classDef db fill:#E6FFFA,stroke:#2B6CB0,stroke-width:2px;
     classDef ext fill:#F7FAFC,stroke:#4A5568;
 
-    class S3,ECR,IAM,IngressELB,AppELB,IGW,NAT,EBS_Jenkins,EBS_Prom aws;
+    class S3,MediaS3,ECR,IAM,IngressELB,AppELB,IGW,NAT,EBS_Jenkins,EBS_Prom aws;
     class VPC vpc;
     class PublicSubnets pubSubnet;
     class PrivateSubnets privSubnet;
@@ -169,7 +173,7 @@ flowchart TB
 
 ### 1. Unified Root-Level Repository Layout
 
-* **Infrastructure as Code (`main.tf`, `modules/`, `charts/`):** All Terraform modules (`s3-backend`, `vpc`, `ecr`, `eks`, `rds`, `cluster-addons`, `jenkins`, `argo-cd`, `monitoring`) and Helm charts reside directly at the repository root, backed by remote S3 state (`tfstate-bucket-lesson5`) with native S3 state locking (`use_lockfile = true`).
+* **Infrastructure as Code (`main.tf`, `modules/`, `charts/`):** All Terraform modules (`s3-backend`, `media-s3`, `vpc`, `ecr`, `eks`, `rds`, `cluster-addons`, `jenkins`, `argo-cd`, `monitoring`) and Helm charts reside directly at the repository root, backed by remote S3 state (`tfstate-bucket-lesson5`) with native S3 state locking (`use_lockfile = true`).
 * **Application Code (`Django/`):** The Django/Wagtail application, `Dockerfile`, `docker-compose.yml`, and `Jenkinsfile` are consolidated inside `Django/`.
 
 ### 2. Network Isolation (VPC `10.0.0.0/16`)
@@ -189,5 +193,6 @@ flowchart TB
 
 ### 5. Secretless GitOps CI/CD
 
-* **IRSA (IAM Roles for Service Accounts):** Ephemeral Jenkins Kaniko agents and the `aws-ebs-csi-driver` authenticate to AWS APIs via the EKS OIDC provider without static `AWS_ACCESS_KEY_ID` credentials.
+* **IRSA (IAM Roles for Service Accounts):** Ephemeral Jenkins Kaniko agents, the `aws-ebs-csi-driver`, and the Wagtail pods (`ServiceAccount: django`) authenticate to AWS APIs via the EKS OIDC provider without static `AWS_ACCESS_KEY_ID` credentials.
+* **Wagtail media (`module.media_s3`):** Images and documents are stored in `wagtail-media-lesson5`. Pods write through IRSA. Objects are world-readable by direct URL so pages keep stable links. CSS and JavaScript stay in the image via `collectstatic`.
 * **Secret Isolation in Argo CD:** The `django-app` `Application` syncs from `charts/django-app` with `createSecrets=false`, keeping runtime secrets decoupled from Git.

@@ -93,6 +93,23 @@ output "argocd_admin_password_command" {
   value       = module.argo_cd.admin_password_command
 }
 
+#-------------Media S3-----------
+
+output "media_s3_bucket_name" {
+  description = "S3-бакет для зображень і документів Wagtail"
+  value       = module.media_s3.bucket_name
+}
+
+output "media_s3_bucket_domain" {
+  description = "Публічний домен медіа-бакета"
+  value       = module.media_s3.bucket_domain
+}
+
+output "media_s3_role_arn" {
+  description = "IAM-роль IRSA для запису медіа з подів Wagtail"
+  value       = module.media_s3.role_arn
+}
+
 #------------ RDS ---------------
 output "rds_endpoint" {
   description = "PostgreSQL writer endpoint"
