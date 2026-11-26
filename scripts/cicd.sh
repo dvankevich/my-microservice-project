@@ -90,12 +90,13 @@ cmd_stop() {
   check_prerequisites
   log "Active Kubernetes context: ${CONTEXT}"
 
-  # 1. Stop Jenkins (EBS PVC preserved)
+  # 1. Stop Jenkins (EBS PVC preserved & orphaned build agents cleaned up)
   if kubectl get namespace "$JENKINS_NS" &>/dev/null; then
     log "Stopping Jenkins in namespace '${JENKINS_NS}'..."
     kubectl scale statefulset --all --replicas=0 -n "$JENKINS_NS"
+    kubectl delete pod --all -n "$JENKINS_NS" --ignore-not-found >/dev/null 2>&1 || true
     kubectl wait --for=delete pod --all -n "$JENKINS_NS" --timeout=120s 2>/dev/null || true
-    pass "Jenkins scaled to 0 replicas (EBS volume preserved)."
+    pass "Jenkins scaled to 0 replicas and agent pods removed (EBS volume preserved)."
   else
     warn "Namespace '${JENKINS_NS}' not found, skipping."
   fi
@@ -170,4 +171,3 @@ case "$ACTION" in
     exit 1
     ;;
 esac
-
