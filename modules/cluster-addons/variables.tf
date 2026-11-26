@@ -15,3 +15,24 @@ variable "cluster_issuer_name" {
   type        = string
   default     = "letsencrypt-prod"
 }
+
+variable "cluster_name" {
+  description = "Назва EKS кластера для auto-discovery Cluster Autoscaler"
+  type        = string
+}
+
+variable "oidc_provider_arn" {
+  description = "ARN OIDC-провайдера EKS для IRSA"
+  type        = string
+}
+
+variable "oidc_provider_url" {
+  description = "URL OIDC-провайдера EKS (без https://)"
+  type        = string
+}
+
+variable "cluster_autoscaler_image_tag" {
+  description = "Тег образу Cluster Autoscaler (має відповідати мінорній версії Kubernetes EKS)"
+  type        = string
+  default     = "v1.37.0"
+}

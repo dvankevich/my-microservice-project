@@ -63,6 +63,10 @@ module "cluster_addons" {
   acme_email            = "admin@dvankevich.pp.ua"
   cluster_issuer_name   = "letsencrypt-prod"
 
+  cluster_name      = module.eks.eks_cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+
   depends_on = [module.eks]
 }
 
