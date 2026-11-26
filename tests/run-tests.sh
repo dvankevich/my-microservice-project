@@ -5,8 +5,9 @@ NAMESPACE="wagtail"
 DOMAIN="django-app.dvankevich.pp.ua"
 URL="https://${DOMAIN}/"
 DEPLOYMENT="django-app-django"
-POSTGRES_DEPLOYMENT="django-app-postgres"
 HPA_NAME="django-app-django-hpa"
+AWS_REGION="eu-central-1"
+RDS_INSTANCE_ID="wagtail-db"
 
 FAST_MODE=false
 WITH_DB=false
@@ -41,6 +42,7 @@ cat <<EOF > "$REPORT_FILE"
 - **Date:** $(date '+%Y-%m-%d %H:%M:%S %Z')
 - **Target URL:** ${URL}
 - **Namespace:** \`${NAMESPACE}\`
+- **Database Backend:** Amazon RDS PostgreSQL (\`${RDS_INSTANCE_ID}\`)
 
 ---
 EOF
@@ -74,7 +76,6 @@ EOF
 # 2. High Availability & Self-Healing
 # ------------------------------------------------------------------------------
 log "2. Checking pod distribution across nodes and Self-Healing"
-PODS_WIDE=$(kubectl get pods -n "$NAMESPACE" -o wide)
 UNIQUE_NODES=$(kubectl get pods -n "$NAMESPACE" -o wide --no-headers | awk '/^django-app-django-/ {print $7}' | sort -u | wc -l)
 
 if [[ "$UNIQUE_NODES" -ge 2 ]]; then
@@ -151,16 +152,17 @@ EOF
 # ------------------------------------------------------------------------------
 log "4. Running external load test (hey -z 3m -c 30) and monitoring HPA"
 HPA_BEFORE=$(kubectl get hpa,pods -n "$NAMESPACE")
+HPA_PEAK="$HPA_BEFORE"
 HEY_LOG="$TMP_DIR/hey_output.txt"
 
 hey -z 3m -c 30 "$URL" > "$HEY_LOG" &
 HEY_PID=$!
 
 PEAK_REPLICAS=2
-HPA_PEAK=""
 
 while kill -0 "$HEY_PID" 2>/dev/null; do
-  CURRENT_REPLICAS=$(kubectl get hpa "$HPA_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentReplicas}')
+  CURRENT_REPLICAS=$(kubectl get hpa "$HPA_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentReplicas}' 2>/dev/null || echo "0")
+  CURRENT_REPLICAS=${CURRENT_REPLICAS:-0}
   if [[ "$CURRENT_REPLICAS" -ge "$PEAK_REPLICAS" ]]; then
     PEAK_REPLICAS="$CURRENT_REPLICAS"
     HPA_PEAK=$(kubectl get hpa,pods -n "$NAMESPACE")
@@ -175,7 +177,8 @@ HEY_SUMMARY=$(cat "$HEY_LOG")
 if [[ "$FAST_MODE" == false ]]; then
   log "Waiting for HPA scale-down to minReplicas=2 (up to 7 min)..."
   for _ in {1..28}; do
-    CUR=$(kubectl get hpa "$HPA_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentReplicas}')
+    CUR=$(kubectl get hpa "$HPA_NAME" -n "$NAMESPACE" -o jsonpath='{.status.currentReplicas}' 2>/dev/null || echo "0")
+    CUR=${CUR:-0}
     if [[ "$CUR" -eq 2 ]]; then
       pass "HPA successfully scaled replicas back down to 2"
       break
@@ -216,20 +219,39 @@ ${HPA_AFTER}
 EOF
 
 # ------------------------------------------------------------------------------
-# 5. (Optional) PostgreSQL EBS Persistence Check
+# 5. (Optional) Managed Amazon RDS PostgreSQL Health & Connectivity Check
 # ------------------------------------------------------------------------------
 if [[ "$WITH_DB" == true ]]; then
-  log "5. Checking PostgreSQL persistence (EBS + Recreate strategy)"
-  kubectl rollout restart deployment/"$POSTGRES_DEPLOYMENT" -n "$NAMESPACE" >/dev/null
-  kubectl rollout status deployment/"$POSTGRES_DEPLOYMENT" -n "$NAMESPACE" --timeout=180s >/dev/null
-  PVC_STATUS=$(kubectl get pvc,pv -n "$NAMESPACE")
-  pass "PostgreSQL restarted successfully, PVC remains Bound"
+  log "5. Checking Managed Amazon RDS PostgreSQL connectivity and status"
+
+  RDS_HOST=$(kubectl exec deployment/"$DEPLOYMENT" -n "$NAMESPACE" -- printenv POSTGRES_HOST)
+  RDS_PORT=$(kubectl exec deployment/"$DEPLOYMENT" -n "$NAMESPACE" -- printenv POSTGRES_PORT)
+
+  # Verify Django ORM database connection from inside the pod
+  DB_CHECK_OUTPUT=$(kubectl exec deployment/"$DEPLOYMENT" -n "$NAMESPACE" -- \
+    python manage.py check --database default 2>&1)
+  pass "Django database check passed against ${RDS_HOST}:${RDS_PORT}"
+
+  # Verify AWS RDS instance status if AWS CLI is available
+  if command -v aws &>/dev/null; then
+    RDS_AWS_INFO=$(aws rds describe-db-instances \
+      --region "$AWS_REGION" \
+      --db-instance-identifier "$RDS_INSTANCE_ID" \
+      --query 'DBInstances[0].{Identifier:DBInstanceIdentifier,Status:DBInstanceStatus,Engine:Engine,Version:EngineVersion,Class:DBInstanceClass,MultiAZ:MultiAZ,Endpoint:Endpoint.Address}' \
+      --output table 2>&1 || echo "Unable to query AWS RDS API")
+  else
+    RDS_AWS_INFO="aws CLI not installed; skipped AWS API status query."
+  fi
 
   cat <<EOF >> "$REPORT_FILE"
-## 5. PostgreSQL EBS Persistence Check
+## 5. Managed Amazon RDS PostgreSQL Check
 
+- **Configured RDS Host:** \`${RDS_HOST}:${RDS_PORT}\`
+- **Django Check Result:** \`${DB_CHECK_OUTPUT}\`
+
+### AWS RDS Instance Status
 \`\`\`text
-${PVC_STATUS}
+${RDS_AWS_INFO}
 \`\`\`
 EOF
 fi
