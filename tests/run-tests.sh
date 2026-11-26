@@ -84,7 +84,7 @@ else
   warn "All Django replicas are currently scheduled on ${UNIQUE_NODES} node(s)"
 fi
 
-VICTIM_POD=$(kubectl get pods -n "$NAMESPACE" --no-headers | awk '/^django-app-django-/ {print $1; exit}')
+VICTIM_POD=$(kubectl get pods -n "$NAMESPACE" --no-headers | awk '/^django-app-django-/ && $3 == "Running" {if (!found) {print $1; found=1}}')
 echo "Deleting pod $VICTIM_POD to verify self-healing..."
 START_HEAL=$(date +%s)
 kubectl delete pod "$VICTIM_POD" -n "$NAMESPACE" --wait=false >/dev/null
