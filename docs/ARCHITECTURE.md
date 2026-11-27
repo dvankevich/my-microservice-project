@@ -67,7 +67,7 @@ flowchart TB
                         JenkinsIng["Ingress: jenkins.dvankevich.pp.ua (TLS)"]
                         JenkinsCtrl["Jenkins Controller (jenkins-0)<br/>JCasC + seed-job (Django/Jenkinsfile)"]
                         JenkinsSA["ServiceAccount: jenkins-sa (IRSA)"]
-                        KanikoPod["Ephemeral Pod Agent<br/>(jnlp + Kaniko + Git)"]
+                        KanikoPod["Ephemeral Pod Agent<br/>(jnlp + Kaniko)"]
                     end
 
                     subgraph NS_Argo ["Namespace: argocd (GitOps CD)"]
@@ -143,8 +143,8 @@ flowchart TB
     JenkinsCtrl -->|"3. Spawn Agent"| KanikoPod
     JenkinsSA -.->|"4. IRSA Auth"| KanikoPod
     KanikoPod -->|"5. Build Django/Dockerfile & Push :tag"| ECR
-    KanikoPod -->|"6. Update charts/django-app/values.yaml [skip ci]"| GitHub
-    ArgoCtrl -->|"7. Poll charts/django-app"| GitHub
+    ImgUpd["Image Updater<br/>newest-build"] -->|"6. Set image.tag, no Git commit"| ArgoCtrl
+    ArgoCtrl -->|"7. Poll charts/django-app on main"| GitHub
     ArgoCtrl -->|"8. Automated Helm Sync"| NS_Wagtail
     DjangoPods -.->|"9. Pull Image via NAT/IGW"| ECR
     PrivateSubnets -.->|"Outbound via NAT"| NAT
@@ -195,5 +195,5 @@ flowchart TB
 
 * **IRSA (IAM Roles for Service Accounts):** Ephemeral Jenkins Kaniko agents, the `aws-ebs-csi-driver`, and the Wagtail pods (`ServiceAccount: django`) authenticate to AWS APIs via the EKS OIDC provider without static `AWS_ACCESS_KEY_ID` credentials.
 * **Wagtail media:** Each environment has its own bucket and IRSA role. Production uses `wagtail-media-lesson5` (`eks-cluster-demo-django-media` for `wagtail:django`). Dev uses `wagtail-media-lesson5-dev`. Staging uses `wagtail-media-lesson5-staging`. Objects are world-readable by direct URL so pages keep stable links. CSS and JavaScript stay in the image via `collectstatic`.
-* **Dev and staging:** Pushes to `dev` and `staging` build tags `:dev-<build>` and `:staging-<build>` in the same ECR repository. Argo CD Applications `django-app-dev` and `django-app-staging` read `charts/django-app` from `main` with `values-dev.yaml` and `values-staging.yaml`. Each runs one replica in its own namespace (`wagtail-dev`, `wagtail-staging`), without an HPA, behind the shared ingress (`django-app-dev.dvankevich.pp.ua`, `django-app-staging.dvankevich.pp.ua`). Databases `wagtail_dev` and `wagtail_staging` live on the same RDS instance as production `wagtail`.
+* **Dev and staging:** Pushes to `dev` and `staging` build tags `:dev-<build>` and `:staging-<build>` in the same ECR repository. Argo CD Applications `django-app-dev` and `django-app-staging` read `charts/django-app` from `main` with `values-dev.yaml` and `values-staging.yaml`. Each runs one replica in its own namespace (`wagtail-dev`, `wagtail-staging`), without an HPA, behind the shared ingress (`django-app-dev.dvankevich.pp.ua`, `django-app-staging.dvankevich.pp.ua`). Databases `wagtail_dev` and `wagtail_staging` live on the same RDS instance as production `wagtail`. The branch prefix, `newest-build` tag ordering, buckets, and rollout are described in [`DEV_STAGING.md`](./DEV_STAGING.md).
 * **Secret Isolation in Argo CD:** Each `Application` syncs from `charts/django-app` with `createSecrets=false`, keeping runtime secrets decoupled from Git.

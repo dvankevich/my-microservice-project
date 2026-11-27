@@ -72,7 +72,7 @@ image:
    * `updateStrategy: "newest-build"` — вибирає найсвіжіший зібраний образ;
    * `allowTags: "regexp:^[0-9]+$"` — для прода враховує лише числові теги білдів Jenkins (`28`, `29`, ...), ігноруючи плаваючий тег `latest` і префіксні теги інших оточень;
    * `writeBackConfig.method: "argocd"` — записує вибраний тег безпосередньо в `spec.source.helm.parameters` об'єкта `Application` (`django-app`) без комітів у Git.
-   * `django-app-dev-updater` приймає лише `regexp:^dev-[0-9]+$` і пише тег в Application `django-app-dev`. `django-app-staging-updater` приймає лише `regexp:^staging-[0-9]+$` і пише тег в `django-app-staging`. `namePattern` — glob на повне ім'я, тож `django-app` не збігається з `django-app-dev`. Jenkins з гілок `dev` і `staging` не пушить тег `latest`.
+   * `django-app-dev-updater` приймає лише `regexp:^dev-[0-9]+$` і пише тег в Application `django-app-dev`. `django-app-staging-updater` приймає лише `regexp:^staging-[0-9]+$` і пише тег в `django-app-staging`. В обох явно стоїть `updateStrategy: newest-build`. Теги `dev-10` і `staging-10` не є semver, і без цієї стратегії рядок `dev-9` виявився б новішим за `dev-10`. `namePattern` — glob на повне ім'я, тож `django-app` не збігається з `django-app-dev`. Jenkins з гілок `dev` і `staging` не пушить тег `latest`. Повний опис оточень — у [`DEV_STAGING.md`](./DEV_STAGING.md).
 
 ---
 

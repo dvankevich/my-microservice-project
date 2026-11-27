@@ -6,7 +6,7 @@ This repository contains Terraform configurations, Helm charts, and the Django/W
 - **Cluster Add-ons & Storage**: Multi-AZ `ingress-nginx` controller, `cert-manager` with a production Let's Encrypt `ClusterIssuer`, and a cluster-scoped encrypted `ebs-gp3` `StorageClass`.
 - **GitOps CI/CD Pipeline**: A declarative Jenkins CI server using Kaniko and IRSA for passwordless ECR builds, paired with Argo CD and **Argo CD Image Updater** for automated, commit-free GitOps continuous delivery.
 - **Observability Stack**: A lightweight Prometheus and **Grafana** monitoring module (`prometheus-server`, `kube-state-metrics`, `prometheus-node-exporter`, and Grafana over HTTPS at `https://grafana.dvankevich.pp.ua`, backed by persistent `ebs-gp3` volumes) tuned for `t3.small` resource limits.
-- **Application Workload**: A Django/Wagtail Helm chart (`charts/django-app`) backed by managed AWS RDS PostgreSQL, an S3 bucket for images and documents (`wagtail-media-lesson5`, written via IRSA), dual L4 `LoadBalancer` / L7 HTTPS `Ingress` access, Horizontal Pod Autoscaling (HPA), and `topologySpreadConstraints`.
+- **Application Workload**: A Django/Wagtail Helm chart (`charts/django-app`) backed by managed AWS RDS PostgreSQL and S3 media via IRSA. Production (`wagtail-media-lesson5`) keeps the L4 `LoadBalancer`, HTTPS Ingress, HPA, and `topologySpreadConstraints`. Pushes to `dev` and `staging` deploy one replica each, without HPA, to their own host, database, and bucket. See [`docs/DEV_STAGING.md`](./docs/DEV_STAGING.md).
 
 ## Project Structure
 
@@ -36,6 +36,7 @@ my-microservice-project/
 │   ├── ARCHITECTURE.md               # Overall AWS & Kubernetes architecture diagram (English)
 │   ├── ARCHITECTURE_UA.md            # Overall AWS & Kubernetes architecture diagram (Ukrainian)
 │   ├── ARGOCD_IMAGE_UPDATER.md       # Guide on eliminating CI commits to main via Argo CD Image Updater
+│   ├── DEV_STAGING.md                # Dev and staging environments: branches, image tags, namespaces, buckets
 │   ├── AUTOMATED_TESTING.md          # Documentation for the automated infrastructure test suite
 │   ├── GRAFANA.md                    # Guide to Grafana setup, dashboards, and EKS PromQL visualizations
 │   ├── LOAD_TESTING.md               # Load testing guide and HPA scaling verification scenarios
@@ -815,7 +816,7 @@ flowchart TD
 4. **Argo CD Image Updater** (`django-app-updater`) polls Amazon ECR every minute, detects the newest numeric tag (`:<BUILD_NUMBER>`), and updates the `image.tag` Helm parameter directly on the `django-app` `Application` resource (`write-back-method: argocd`).
 5. Argo CD executes a zero-downtime rolling update of `django-app-django` in `wagtail`, which connects to the managed Amazon RDS PostgreSQL database.
 
-Pushes to `dev` and `staging` follow the same webhook. Jenkins jobs `django-wagtail-ci-dev` and `django-wagtail-ci-staging` push only `:dev-<build>` or `:staging-<build>` (they do not move `:latest`). The matching Image Updater writes that tag onto `django-app-dev` or `django-app-staging`. Those Applications render the same chart from `main` with `values-dev.yaml` or `values-staging.yaml`: one replica, no HPA, Service `ClusterIP`, and a dedicated RDS database (`wagtail_dev`, `wagtail_staging`) plus a dedicated media bucket. HTTPS for `django-app-dev.dvankevich.pp.ua` and `django-app-staging.dvankevich.pp.ua` uses the shared ingress ELB. Point both names at `ingress_elb_hostname` with `CNAME` records. The ClusterIP of each app Service is an internal address; Kubernetes keeps it until that Service object is deleted.
+Pushes to `dev` and `staging` follow the same webhook. Jenkins jobs `django-wagtail-ci-dev` and `django-wagtail-ci-staging` push only `:dev-<build>` or `:staging-<build>` (they do not move `:latest`). The matching Image Updater uses `newest-build`, because tags such as `dev-10` are not semver and must not be sorted alphabetically. It writes that tag onto `django-app-dev` or `django-app-staging`. Those Applications render the same chart from `main` with `values-dev.yaml` or `values-staging.yaml`: one replica, no HPA, Service `ClusterIP`, and a dedicated RDS database (`wagtail_dev`, `wagtail_staging`) plus a dedicated media bucket. HTTPS for `django-app-dev.dvankevich.pp.ua` and `django-app-staging.dvankevich.pp.ua` uses the shared ingress ELB. The full layout, the `origin/` branch prefix in `GIT_BRANCH`, and the rollout steps are in [`docs/DEV_STAGING.md`](./docs/DEV_STAGING.md).
 
 ## Deploy Prometheus & Grafana Monitoring (`./modules/monitoring`)
 
