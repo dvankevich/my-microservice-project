@@ -54,3 +54,25 @@ kubectl get nodes -w
 - **Розширення кластера (`Scale-Up`):** якщо після запуску `./scripts/cicd.sh start` новим подам бракує слотів (11 подів на `t3.small`) або RAM і вони переходять у статус `Pending`, у логах з'явиться рядок `Scale-up: setting group eks-general-... size to X`. Поява нового EC2-вузла та його перехід у статус `Ready` займає 2–4 хвилини.
 - **Очікування перед зменшенням (`Scale-Down`):** після зупинки CI/CD або спаду навантаження автоскейлер перевіряє кожну ноду на можливість безпечного звільнення (`Simulating node removal` → `Node may be removed`). Вузли зі stateful-подами на EBS (`jenkins`, `prometheus`, `grafana`) не чіпаються, а для порожніх нод запускається таймер `Node is unneeded ... duration="..."`.
 - **Видалення зайвої ноди:** щойно таймер простою досягне налаштованого порогу (`10m`), у логах з'явиться `Scale-down: removing node ...` (за умови, що поточна кількість нод більша за `minSize` у `cluster-autoscaler-status`), після чого системні поди переїдуть на інші вузли, а EC2-інстанс буде зупинено.
+
+# Керування dev і staging (`dev-staging.sh`)
+
+Скрипт зупиняє і знову запускає застосунки в `wagtail-dev` і `wagtail-staging`. Продакшн у `wagtail` не змінюється. Ingress, сертифікати, секрети і бази лишаються на місці: зупинка лише прибирає поди.
+
+Просте `kubectl scale --replicas=0` Argo CD одразу поверне назад, бо в Application увімкнені `selfHeal` і `replicas: 1`. Тому `stop` записує Helm-параметр `replicaCount=0` в Application, а `start` цей параметр знімає, і чарт знову дає одну репліку.
+
+```bash
+chmod +x scripts/dev-staging.sh
+./scripts/dev-staging.sh stop
+./scripts/dev-staging.sh stop dev
+./scripts/dev-staging.sh start staging
+./scripts/dev-staging.sh status
+```
+
+| Команда | Опис |
+| :--- | :--- |
+| `stop` | Масштабує dev і staging до 0 реплік. |
+| `stop dev` / `stop staging` | Зупиняє лише одне оточення. |
+| `start` | Повертає одну репліку для dev і staging. |
+| `start dev` / `start staging` | Запускає лише одне оточення. |
+| `status` | Показує Deployment продакшну, dev і staging і чи стоїть override `replicaCount`. |

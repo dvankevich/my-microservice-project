@@ -90,3 +90,12 @@ aws ecr describe-images \
 ```
 
 Після пуша в `dev` з'являється тег `dev-<номер>` і параметр `image.tag` у Application `django-app-dev`. Для `staging` тег має вигляд `staging-<номер>`. Голий числовий тег і `:latest` з цих job не з'являються.
+
+Зупинити поди без видалення Ingress, сертифікатів і секретів:
+
+```bash
+./scripts/dev-staging.sh stop
+./scripts/dev-staging.sh start
+```
+
+Скрипт ставить Helm-параметр `replicaCount=0` на Application, бо інакше Argo CD selfHeal поверне одну репліку. Продакшн він не чіпає. Деталі команд — у [`scripts/README.md`](../scripts/README.md).
