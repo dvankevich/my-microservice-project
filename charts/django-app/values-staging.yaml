@@ -1,0 +1,23 @@
+replicaCount: 1
+
+service:
+  type: ClusterIP
+
+ingress:
+  host: django-app-staging.dvankevich.pp.ua
+  tls:
+    secretName: django-app-staging-tls
+
+autoscaling:
+  enabled: false
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::250284066941:role/eks-cluster-demo-django-media-staging"
+
+media:
+  bucket: wagtail-media-lesson5-staging
+
+env:
+  CSRF_TRUSTED_ORIGINS: "https://django-app-staging.dvankevich.pp.ua"
+  POSTGRES_DB: wagtail_staging

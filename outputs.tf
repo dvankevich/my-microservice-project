@@ -110,6 +110,26 @@ output "media_s3_role_arn" {
   value       = module.media_s3.role_arn
 }
 
+output "media_s3_dev_bucket_name" {
+  description = "S3-бакет медіа для оточення dev"
+  value       = module.media_s3_dev.bucket_name
+}
+
+output "media_s3_dev_role_arn" {
+  description = "IAM-роль IRSA для запису медіа з подів dev"
+  value       = module.media_s3_dev.role_arn
+}
+
+output "media_s3_staging_bucket_name" {
+  description = "S3-бакет медіа для оточення staging"
+  value       = module.media_s3_staging.bucket_name
+}
+
+output "media_s3_staging_role_arn" {
+  description = "IAM-роль IRSA для запису медіа з подів staging"
+  value       = module.media_s3_staging.role_arn
+}
+
 #------------ RDS ---------------
 output "rds_endpoint" {
   description = "PostgreSQL writer endpoint"

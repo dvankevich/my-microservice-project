@@ -66,7 +66,11 @@ controller:
                   dsl {
                     text('''
                       pipelineJob("django-wagtail-ci") {
-                        description("Build and push Django/Wagtail Docker image to Amazon ECR")
+                        description("Build and push Django/Wagtail Docker image from main")
+                        environmentVariables {
+                          env("TRACKED_BRANCH", "main")
+                          env("IMAGE_TAG_PREFIX", "")
+                        }
                         triggers {
                           githubPush()
                         }
@@ -79,6 +83,56 @@ controller:
                                   credentials("github-token")
                                 }
                                 branches("*/main")
+                              }
+                            }
+                            scriptPath("Django/Jenkinsfile")
+                            lightweight(true)
+                          }
+                        }
+                      }
+                      pipelineJob("django-wagtail-ci-dev") {
+                        description("Build and push Django/Wagtail Docker image from dev")
+                        environmentVariables {
+                          env("TRACKED_BRANCH", "dev")
+                          env("IMAGE_TAG_PREFIX", "dev")
+                        }
+                        triggers {
+                          githubPush()
+                        }
+                        definition {
+                          cpsScm {
+                            scm {
+                              git {
+                                remote {
+                                  url("https://github.com/dvankevich/my-microservice-project.git")
+                                  credentials("github-token")
+                                }
+                                branches("*/dev")
+                              }
+                            }
+                            scriptPath("Django/Jenkinsfile")
+                            lightweight(true)
+                          }
+                        }
+                      }
+                      pipelineJob("django-wagtail-ci-staging") {
+                        description("Build and push Django/Wagtail Docker image from staging")
+                        environmentVariables {
+                          env("TRACKED_BRANCH", "staging")
+                          env("IMAGE_TAG_PREFIX", "staging")
+                        }
+                        triggers {
+                          githubPush()
+                        }
+                        definition {
+                          cpsScm {
+                            scm {
+                              git {
+                                remote {
+                                  url("https://github.com/dvankevich/my-microservice-project.git")
+                                  credentials("github-token")
+                                }
+                                branches("*/staging")
                               }
                             }
                             scriptPath("Django/Jenkinsfile")

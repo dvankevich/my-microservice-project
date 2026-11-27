@@ -144,6 +144,44 @@ module "media_s3" {
   depends_on = [module.eks]
 }
 
+module "media_s3_dev" {
+  source = "./modules/media-s3"
+
+  bucket_name       = "wagtail-media-lesson5-dev"
+  cluster_name      = module.eks.eks_cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  namespace         = "wagtail-dev"
+  service_account   = "django"
+  name_suffix       = "dev"
+  environment       = "dev"
+  cors_allowed_origins = [
+    "https://django-app-dev.dvankevich.pp.ua",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+  ]
+
+  depends_on = [module.eks]
+}
+
+module "media_s3_staging" {
+  source = "./modules/media-s3"
+
+  bucket_name       = "wagtail-media-lesson5-staging"
+  cluster_name      = module.eks.eks_cluster_name
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = module.eks.oidc_provider_url
+  namespace         = "wagtail-staging"
+  service_account   = "django"
+  name_suffix       = "staging"
+  environment       = "staging"
+  cors_allowed_origins = [
+    "https://django-app-staging.dvankevich.pp.ua",
+  ]
+
+  depends_on = [module.eks]
+}
+
 module "rds" {
   source = "./modules/rds"
 

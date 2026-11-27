@@ -20,6 +20,50 @@ applications:
         selfHeal: true
       syncOptions:
         - CreateNamespace=true
+  - name: django-app-dev
+    project: default
+    source:
+      repoURL: https://github.com/dvankevich/my-microservice-project.git
+      path: charts/django-app
+      targetRevision: main
+      helm:
+        valueFiles:
+          - values.yaml
+          - values-dev.yaml
+        parameters:
+          - name: createSecrets
+            value: "false"
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: wagtail-dev
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      syncOptions:
+        - CreateNamespace=true
+  - name: django-app-staging
+    project: default
+    source:
+      repoURL: https://github.com/dvankevich/my-microservice-project.git
+      path: charts/django-app
+      targetRevision: main
+      helm:
+        valueFiles:
+          - values.yaml
+          - values-staging.yaml
+        parameters:
+          - name: createSecrets
+            value: "false"
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: wagtail-staging
+    syncPolicy:
+      automated:
+        prune: true
+        selfHeal: true
+      syncOptions:
+        - CreateNamespace=true
 
 imageUpdaters:
   - name: django-app-updater
@@ -31,6 +75,38 @@ imageUpdaters:
       method: "argocd"
     applicationRefs:
       - namePattern: "django-app"
+        images:
+          - alias: "django"
+            imageName: "${ecr_repository_url}"
+            manifestTargets:
+              helm:
+                name: "image.repository"
+                tag: "image.tag"
+  - name: django-app-dev-updater
+    targetNamespace: argocd
+    commonUpdateSettings:
+      updateStrategy: "newest-build"
+      allowTags: "regexp:^dev-[0-9]+$"
+    writeBackConfig:
+      method: "argocd"
+    applicationRefs:
+      - namePattern: "django-app-dev"
+        images:
+          - alias: "django"
+            imageName: "${ecr_repository_url}"
+            manifestTargets:
+              helm:
+                name: "image.repository"
+                tag: "image.tag"
+  - name: django-app-staging-updater
+    targetNamespace: argocd
+    commonUpdateSettings:
+      updateStrategy: "newest-build"
+      allowTags: "regexp:^staging-[0-9]+$"
+    writeBackConfig:
+      method: "argocd"
+    applicationRefs:
+      - namePattern: "django-app-staging"
         images:
           - alias: "django"
             imageName: "${ecr_repository_url}"

@@ -6,7 +6,7 @@ resource "aws_s3_bucket" "media" {
 
   tags = {
     Name        = "Wagtail media"
-    Environment = "dev"
+    Environment = var.environment
     Project     = "wagtail-eks"
   }
 }

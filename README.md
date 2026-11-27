@@ -145,12 +145,15 @@ Provisions remote state storage in AWS using native S3 backend locking:
 
 ### `media-s3` (`./modules/media-s3`)
 
-Stores Wagtail images and documents for every replica of `django-app`:
+Stores Wagtail images and documents. Each environment has its own bucket and IRSA role:
 
-- **Bucket (`s3.tf`)**: Creates `wagtail-media-lesson5` with versioning, AES-256 encryption, and `BucketOwnerEnforced` ownership. A bucket policy allows public `s3:GetObject`. Listing stays private. CORS allows the site and local admin origins to read images for the focal-point editor.
-- **IRSA (`iam.tf`)**: Role `eks-cluster-demo-django-media` can be assumed only by `system:serviceaccount:wagtail:django`. It can list the bucket and get, put, and delete objects. Pods do not receive static access keys.
+- **Production (`module.media_s3`)**: Bucket `wagtail-media-lesson5`, role `eks-cluster-demo-django-media`, trusted by `system:serviceaccount:wagtail:django`.
+- **Dev (`module.media_s3_dev`)**: Bucket `wagtail-media-lesson5-dev`, role `eks-cluster-demo-django-media-dev`, trusted by `system:serviceaccount:wagtail-dev:django`.
+- **Staging (`module.media_s3_staging`)**: Bucket `wagtail-media-lesson5-staging`, role `eks-cluster-demo-django-media-staging`, trusted by `system:serviceaccount:wagtail-staging:django`.
 
-The Helm values `media.bucket` and `serviceAccount.annotations` must match this module. `terraform output media_s3_role_arn` prints the role ARN.
+Every bucket has versioning, AES-256 encryption, `BucketOwnerEnforced` ownership, and a public `s3:GetObject` policy. Listing stays private. CORS on each bucket allows that environment's HTTPS origin (and localhost on prod and dev) so the focal-point editor can read images. A role can write only to its own bucket. Pods do not receive static access keys.
+
+`name_suffix` is empty for production, so Terraform keeps the existing role name. Helm `media.bucket` and `serviceAccount.annotations` must match the module for that environment. `terraform output media_s3_role_arn` prints the production role ARN. Dev and staging ARNs are `media_s3_dev_role_arn` and `media_s3_staging_role_arn`.
 
 ### `vpc` (`./modules/vpc`)
 
@@ -184,7 +187,7 @@ Provisions cluster-wide ingress, storage class, and TLS certificate management v
 - **Multi-AZ `ingress-nginx` (`main.tf`)**: Installs `ingress-nginx` with `replicaCount = 2` and `topologySpreadConstraints` keyed on `topology.kubernetes.io/zone` (`maxSkew = 1`, `whenUnsatisfiable = "ScheduleAnyway"`), sharing a single AWS LoadBalancer without single-AZ failure points.
 - **Cluster StorageClass (`main.tf`)**: Provisions `kubernetes_storage_class_v1.ebs_gp3` (`ebs.csi.aws.com`, `volume_binding_mode = "WaitForFirstConsumer"`, `allow_volume_expansion = true`, encrypted `gp3` volumes) at the cluster level so persistent volumes for Jenkins, Prometheus, and Grafana remain decoupled from application Helm charts.
 - **`cert-manager` & `ClusterIssuer` (`main.tf`)**: Installs `cert-manager` (`crds.enabled = true`) and provisions the production Let's Encrypt `ClusterIssuer` (`letsencrypt-prod`) using HTTP-01 challenge validation via the `nginx` ingress class.
-- **ELB Hostname Output (`outputs.tf`)**: Exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app.dvankevich.pp.ua`, `jenkins.dvankevich.pp.ua`, `argocd.dvankevich.pp.ua`, and `grafana.dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
+- **ELB Hostname Output (`outputs.tf`)**: Exports `ingress_elb_hostname` so DNS `CNAME` records for `django-app`, `django-app-dev`, `django-app-staging`, `jenkins`, `argocd`, and `grafana` on `dvankevich.pp.ua` can be retrieved directly from Terraform outputs.
 
 ### `jenkins` (`./modules/jenkins`)
 
@@ -196,7 +199,7 @@ Deploys Jenkins into the `jenkins` namespace using the Terraform `helm` and `kub
 - **Declarative JCasC & Seed Job (`values.yaml` & `secrets.yaml`)**:
   - Injects `module.ecr.repository_url` dynamically via `templatefile` as a global Jenkins environment variable (`ECR_REPO_URL`).
   - Loads the Jenkins admin password and GitHub Fine-grained Personal Access Token (`github-token`) from the gitignored `modules/jenkins/secrets.yaml` file.
-  - Automatically configures `seed-job` using the `job-dsl` plugin to generate the `django-wagtail-ci` pipeline with `triggers { githubPush() }` targeting `https://github.com/dvankevich/my-microservice-project.git` (`Django/Jenkinsfile`).
+  - Automatically configures `seed-job` using the `job-dsl` plugin to generate three pipelines with `triggers { githubPush() }` against `https://github.com/dvankevich/my-microservice-project.git` (`Django/Jenkinsfile`): `django-wagtail-ci` (`main`, tags `:<build>` and `:latest`), `django-wagtail-ci-dev` (`dev`, tag `:dev-<build>`), and `django-wagtail-ci-staging` (`staging`, tag `:staging-<build>`).
 
 ### `argo-cd` (`./modules/argo-cd`)
 
@@ -206,8 +209,8 @@ Deploys Argo CD and **Argo CD Image Updater** into the `argocd` namespace as the
 - **IRSA ECR Authentication & Token Refresh (`argo_cd.tf`)**: Provisions an IAM role (`eks-cluster-demo-argocd-ecr-role`) bound to the `ecr-token-refresher` `ServiceAccount` with ECR authorization and read permissions (`ecr:GetAuthorizationToken`, `ecr:ListImages`, `ecr:DescribeImages`, etc.). An initial `Job` (`ecr-token-init`) and a periodic `CronJob` (`ecr-token-refresh`, running every 6 hours via `public.ecr.aws/aws-cli/aws-cli` + `alpine/kubectl`) keep the `ecr-credentials` Docker registry secret valid.
 - **Argo CD Image Updater (`argo_cd.tf` & `image-updater-values.yaml`)**: Installs `argocd-image-updater` (`v1.5.0+`), polling Amazon ECR every `1m` without making automated commits to `main`.
 - **Declarative Applications & ImageUpdaters Chart (`argo_cd.tf` & `charts/`)**: Deploys a local `argo-apps` Helm release that provisions:
-  - The `django-app` `Application` custom resource watching `charts/django-app` on `main` with automated `prune: true`, `selfHeal: true`, and `createSecrets=false`.
-  - The `django-app-updater` `ImageUpdater` (`argocd-image-updater.argoproj.io/v1alpha1`) custom resource tracking numeric image tags (`regexp:^[0-9]+$`) with the `newest-build` strategy and `writeBackConfig.method: argocd` (updating `image.repository` and `image.tag` directly in the `Application` spec).
+  - Three `Application` resources watching `charts/django-app` on `main`, with automated `prune: true`, `selfHeal: true`, and `createSecrets=false`. `django-app` deploys `values.yaml` into `wagtail` (2 replicas, HPA, LoadBalancer). `django-app-dev` and `django-app-staging` add `values-dev.yaml` / `values-staging.yaml` and deploy one replica without HPA, as `ClusterIP`, into `wagtail-dev` and `wagtail-staging`.
+  - Three `ImageUpdater` resources (`argocd-image-updater.argoproj.io/v1alpha1`) with `newest-build` and `writeBackConfig.method: argocd`. `django-app-updater` accepts only numeric tags (`regexp:^[0-9]+$`). `django-app-dev-updater` accepts `regexp:^dev-[0-9]+$`. `django-app-staging-updater` accepts `regexp:^staging-[0-9]+$`. Each `namePattern` is an exact application name, so a dev tag cannot move production.
 
 ### `monitoring` (`./modules/monitoring`)
 
@@ -811,6 +814,8 @@ flowchart TD
 3. Kaniko builds `Django/Dockerfile` and pushes `:<BUILD_NUMBER>` and `:latest` to ECR (no commits are pushed back to Git).
 4. **Argo CD Image Updater** (`django-app-updater`) polls Amazon ECR every minute, detects the newest numeric tag (`:<BUILD_NUMBER>`), and updates the `image.tag` Helm parameter directly on the `django-app` `Application` resource (`write-back-method: argocd`).
 5. Argo CD executes a zero-downtime rolling update of `django-app-django` in `wagtail`, which connects to the managed Amazon RDS PostgreSQL database.
+
+Pushes to `dev` and `staging` follow the same webhook. Jenkins jobs `django-wagtail-ci-dev` and `django-wagtail-ci-staging` push only `:dev-<build>` or `:staging-<build>` (they do not move `:latest`). The matching Image Updater writes that tag onto `django-app-dev` or `django-app-staging`. Those Applications render the same chart from `main` with `values-dev.yaml` or `values-staging.yaml`: one replica, no HPA, Service `ClusterIP`, and a dedicated RDS database (`wagtail_dev`, `wagtail_staging`) plus a dedicated media bucket. HTTPS for `django-app-dev.dvankevich.pp.ua` and `django-app-staging.dvankevich.pp.ua` uses the shared ingress ELB. Point both names at `ingress_elb_hostname` with `CNAME` records. The ClusterIP of each app Service is an internal address; Kubernetes keeps it until that Service object is deleted.
 
 ## Deploy Prometheus & Grafana Monitoring (`./modules/monitoring`)
 

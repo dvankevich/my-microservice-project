@@ -70,8 +70,9 @@ image:
 1. **`modules/argo-cd/image-updater-values.yaml`:** налаштовано опитування ECR з інтервалом `--interval 1m`, підключення секрету `pullsecret:argocd/ecr-credentials` та обмеження ресурсів (`requests: 25m CPU / 64Mi RAM`, `limits: 100m CPU / 128Mi RAM`) під вузли `t3.small`.
 2. **`modules/argo-cd/charts/templates/image-updater.yaml` та `charts/values.yaml`:** створено ресурс `ImageUpdater` (`apiVersion: argocd-image-updater.argoproj.io/v1alpha1`):
    * `updateStrategy: "newest-build"` — вибирає найсвіжіший зібраний образ;
-   * `allowTags: "regexp:^[0-9]+$"` — враховує лише числові теги білдів Jenkins (`28`, `29`, ...), ігноруючи плаваючий тег `latest`;
+   * `allowTags: "regexp:^[0-9]+$"` — для прода враховує лише числові теги білдів Jenkins (`28`, `29`, ...), ігноруючи плаваючий тег `latest` і префіксні теги інших оточень;
    * `writeBackConfig.method: "argocd"` — записує вибраний тег безпосередньо в `spec.source.helm.parameters` об'єкта `Application` (`django-app`) без комітів у Git.
+   * `django-app-dev-updater` приймає лише `regexp:^dev-[0-9]+$` і пише тег в Application `django-app-dev`. `django-app-staging-updater` приймає лише `regexp:^staging-[0-9]+$` і пише тег в `django-app-staging`. `namePattern` — glob на повне ім'я, тож `django-app` не збігається з `django-app-dev`. Jenkins з гілок `dev` і `staging` не пушить тег `latest`.
 
 ---
 

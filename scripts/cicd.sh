@@ -4,6 +4,8 @@ set -euo pipefail
 JENKINS_NS="jenkins"
 ARGOCD_NS="argocd"
 APP_NS="wagtail"
+DEV_NS="wagtail-dev"
+STAGING_NS="wagtail-staging"
 ROLLOUT_TIMEOUT="300s" # Allows up to 5m for Cluster Autoscaler to provision a node if needed
 
 log()  { echo -e "\n\033[1;34m==>\033[0m \033[1m$1\033[0m"; }
@@ -137,6 +139,12 @@ cmd_status() {
 
   echo -e "\n--- Production App (${APP_NS}) ---"
   kubectl get pods,hpa -n "$APP_NS" 2>/dev/null || echo "Namespace '${APP_NS}' not found."
+
+  echo -e "\n--- Dev App (${DEV_NS}) ---"
+  kubectl get pods,deploy -n "$DEV_NS" 2>/dev/null || echo "Namespace '${DEV_NS}' not found."
+
+  echo -e "\n--- Staging App (${STAGING_NS}) ---"
+  kubectl get pods,deploy -n "$STAGING_NS" 2>/dev/null || echo "Namespace '${STAGING_NS}' not found."
 }
 
 # ------------------------------------------------------------------------------

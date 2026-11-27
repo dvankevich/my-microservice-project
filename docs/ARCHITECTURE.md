@@ -10,7 +10,7 @@ flowchart TB
     subgraph External ["External & SaaS Services"]
         Users(["End Users / Administrator<br/>HTTPS / HTTP"])
         Dev(["Developer / Operator<br/>git push & kubectl"])
-        DNS["DNS Provider (dvankevich.pp.ua)<br/>CNAME: django-app, jenkins, argocd"]
+        DNS["DNS Provider (dvankevich.pp.ua)<br/>CNAME: django-app, django-app-dev,<br/>django-app-staging, jenkins, argocd"]
         LetsEncrypt["Let's Encrypt ACME<br/>(HTTP-01 TLS)"]
         GitHub[("GitHub Repository<br/>dvankevich/my-microservice-project")]
     end
@@ -22,7 +22,7 @@ flowchart TB
         %% AWS Regional Managed Services
         subgraph AWSManaged ["AWS Regional Services (Outside VPC)"]
             S3[("Amazon S3<br/>tfstate-bucket-lesson5<br/>Terraform State + S3 Lockfile")]
-            MediaS3[("Amazon S3<br/>wagtail-media-lesson5<br/>Wagtail images and documents")]
+            MediaS3[("Amazon S3 media buckets<br/>wagtail-media-lesson5<br/>wagtail-media-lesson5-dev<br/>wagtail-media-lesson5-staging")]
             ECR[("Amazon ECR<br/>lesson-5-ecr<br/>Container Images")]
             IAM["AWS IAM & EKS OIDC<br/>IRSA Roles (EBS CSI, Kaniko)"]
         end
@@ -138,7 +138,7 @@ flowchart TB
     PromSrv -.->|"Scrape API, Nodes & Pods"| EKS
 
     %% CI/CD GitOps Loop
-    Dev -->|"1. Push code (main)"| GitHub
+    Dev -->|"1. Push code (main, dev, or staging)"| GitHub
     GitHub -->|"2. Webhook POST /github-webhook/"| JenkinsCtrl
     JenkinsCtrl -->|"3. Spawn Agent"| KanikoPod
     JenkinsSA -.->|"4. IRSA Auth"| KanikoPod
@@ -183,7 +183,7 @@ flowchart TB
 
 ### 3. Traffic Routing, High Availability & TLS
 
-* **Shared L7 Ingress (`ingress-nginx` + `cert-manager`):** Routes HTTPS traffic for `django-app`, `jenkins`, and `argocd` subdomains through a single AWS LoadBalancer with automated TLS certificate issuance and renewal via Let's Encrypt (`letsencrypt-prod`).
+* **Shared L7 Ingress (`ingress-nginx` + `cert-manager`):** Routes HTTPS traffic for `django-app`, `django-app-dev`, `django-app-staging`, `jenkins`, and `argocd` subdomains through a single AWS LoadBalancer with automated TLS certificate issuance and renewal via Let's Encrypt (`letsencrypt-prod`). Dev and staging application Services are `ClusterIP`. Their ClusterIP stays until the Service object is recreated. Public DNS points at the shared ingress ELB, not at that ClusterIP.
 * **Workload Distribution (`topologySpreadConstraints`):** Both `ingress-nginx-controller` replicas (spread across Availability Zones) and `django-app-django` pods (spread across worker nodes) avoid single-node points of failure and scale dynamically via HPA (`2–6` replicas).
 
 ### 4. Cluster Storage & Lightweight Observability (`module.monitoring`)
@@ -194,5 +194,6 @@ flowchart TB
 ### 5. Secretless GitOps CI/CD
 
 * **IRSA (IAM Roles for Service Accounts):** Ephemeral Jenkins Kaniko agents, the `aws-ebs-csi-driver`, and the Wagtail pods (`ServiceAccount: django`) authenticate to AWS APIs via the EKS OIDC provider without static `AWS_ACCESS_KEY_ID` credentials.
-* **Wagtail media (`module.media_s3`):** Images and documents are stored in `wagtail-media-lesson5`. Pods write through IRSA. Objects are world-readable by direct URL so pages keep stable links. CSS and JavaScript stay in the image via `collectstatic`.
-* **Secret Isolation in Argo CD:** The `django-app` `Application` syncs from `charts/django-app` with `createSecrets=false`, keeping runtime secrets decoupled from Git.
+* **Wagtail media:** Each environment has its own bucket and IRSA role. Production uses `wagtail-media-lesson5` (`eks-cluster-demo-django-media` for `wagtail:django`). Dev uses `wagtail-media-lesson5-dev`. Staging uses `wagtail-media-lesson5-staging`. Objects are world-readable by direct URL so pages keep stable links. CSS and JavaScript stay in the image via `collectstatic`.
+* **Dev and staging:** Pushes to `dev` and `staging` build tags `:dev-<build>` and `:staging-<build>` in the same ECR repository. Argo CD Applications `django-app-dev` and `django-app-staging` read `charts/django-app` from `main` with `values-dev.yaml` and `values-staging.yaml`. Each runs one replica in its own namespace (`wagtail-dev`, `wagtail-staging`), without an HPA, behind the shared ingress (`django-app-dev.dvankevich.pp.ua`, `django-app-staging.dvankevich.pp.ua`). Databases `wagtail_dev` and `wagtail_staging` live on the same RDS instance as production `wagtail`.
+* **Secret Isolation in Argo CD:** Each `Application` syncs from `charts/django-app` with `createSecrets=false`, keeping runtime secrets decoupled from Git.

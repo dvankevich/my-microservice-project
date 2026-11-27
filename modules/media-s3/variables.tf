@@ -30,6 +30,18 @@ variable "service_account" {
   default     = "django"
 }
 
+variable "name_suffix" {
+  description = "Суфікс IAM-ролі. Порожній залишає ім'я <cluster>-django-media."
+  type        = string
+  default     = ""
+}
+
+variable "environment" {
+  description = "Тег Environment на бакеті"
+  type        = string
+  default     = "dev"
+}
+
 variable "cors_allowed_origins" {
   description = "Origin-и, з яких адмінка Wagtail може читати зображення (focal point)"
   type        = list(string)

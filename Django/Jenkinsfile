@@ -52,6 +52,21 @@ spec:
     stage('Verify Environment') {
       steps {
         script {
+          def trackedBranch = (env.TRACKED_BRANCH ?: 'main').trim()
+          def actualBranch = (env.GIT_BRANCH ?: '').trim()
+          if (!actualBranch) {
+            actualBranch = sh(script: 'git rev-parse --abbrev-ref @{upstream} 2>/dev/null || git name-rev --name-only HEAD', returnStdout: true).trim()
+          }
+          def normalizedBranch = actualBranch
+            .replaceFirst(/^refs\/heads\//, '')
+            .replaceFirst(/^refs\/remotes\//, '')
+            .replaceFirst(/^remotes\//, '')
+            .replaceFirst(/^origin\//, '')
+            .replaceFirst(/~\d+$/, '')
+          if (normalizedBranch != trackedBranch) {
+            error("Job налаштовано на гілку ${trackedBranch}, а визначена гілка '${actualBranch}'.")
+          }
+
           def commitSubject = sh(script: "git log -1 --pretty=%s", returnStdout: true).trim()
           def isManualBuild = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause').size() > 0
 
@@ -63,8 +78,18 @@ spec:
           if (!env.ECR_REPO_URL) {
             error("Змінна середовища ECR_REPO_URL не задана в налаштуваннях Jenkins (JCasC)!")
           }
+
+          def tagPrefix = (env.IMAGE_TAG_PREFIX ?: '').trim()
+          def imageTag = tagPrefix ? "${tagPrefix}-${env.BUILD_NUMBER}" : env.BUILD_NUMBER
+          env.IMAGE_TAG = imageTag
+          env.PUSH_LATEST = tagPrefix ? 'false' : 'true'
+
           echo "Target ECR Repository: ${env.ECR_REPO_URL}"
-          echo "Image Tags: latest, ${env.BUILD_NUMBER}"
+          echo "Tracked branch: ${trackedBranch}"
+          echo "Image tag: ${imageTag}"
+          if (env.PUSH_LATEST == 'true') {
+            echo "Also pushing tag: latest"
+          }
         }
       }
     }
@@ -76,11 +101,20 @@ spec:
       steps {
         container('kaniko') {
           sh '''
+            set -eu
+            if [ -z "${IMAGE_TAG}" ]; then
+              echo "IMAGE_TAG is empty" >&2
+              exit 1
+            fi
+            destinations="--destination=${ECR_REPO_URL}:${IMAGE_TAG}"
+            if [ "${PUSH_LATEST}" = "true" ]; then
+              destinations="${destinations} --destination=${ECR_REPO_URL}:latest"
+            fi
+            # shellcheck disable=SC2086
             /kaniko/executor \
               --context="${WORKSPACE}/Django" \
               --dockerfile="${WORKSPACE}/Django/Dockerfile" \
-              --destination="${ECR_REPO_URL}:latest" \
-              --destination="${ECR_REPO_URL}:${BUILD_NUMBER}" \
+              ${destinations} \
               --snapshot-mode=redo \
               --use-new-run \
               --compressed-caching=false

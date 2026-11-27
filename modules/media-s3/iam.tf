@@ -1,6 +1,10 @@
+locals {
+  role_name = var.name_suffix == "" ? "${var.cluster_name}-django-media" : "${var.cluster_name}-django-media-${var.name_suffix}"
+}
+
 # IRSA: поди Wagtail приймають цю роль без статичних AWS-ключів.
 resource "aws_iam_role" "django_media" {
-  name = "${var.cluster_name}-django-media"
+  name = local.role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -23,7 +27,7 @@ resource "aws_iam_role" "django_media" {
 }
 
 resource "aws_iam_role_policy" "django_media" {
-  name = "${var.cluster_name}-django-media"
+  name = local.role_name
   role = aws_iam_role.django_media.id
 
   policy = jsonencode({
