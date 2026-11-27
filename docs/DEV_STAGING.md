@@ -38,12 +38,12 @@ flowchart LR
 ```
 
 1. Той самий GitHub webhook шле push на `https://jenkins.dvankevich.pp.ua/github-webhook/`.
-2. Seed у `modules/jenkins/values.yaml` описує три `pipelineJob`. Кожен дивиться свою гілку (`*/main`, `*/dev`, `*/staging`) і передає `TRACKED_BRANCH` та `IMAGE_TAG_PREFIX`.
-3. `Django/Jenkinsfile` збирає `Django/Dockerfile` через Kaniko. Для `main` тег дорівнює номеру білда, додатково пушиться `:latest`. Для інших гілок тег має префікс, наприклад `dev-4`.
+2. Seed у `modules/jenkins/values.yaml` описує три `pipelineJob`. Кожен дивиться свою гілку (`*/main`, `*/dev`, `*/staging`).
+3. `Django/Jenkinsfile` збирає `Django/Dockerfile` через Kaniko. Префікс тега береться з гілки, яку Jenkins вже зачекаутив: `main` дає номер білда і `:latest`, `dev` і `staging` дають `dev-4` чи `staging-4`.
 4. Відповідний Image Updater раз на хвилину бере найсвіжіший дозволений тег і записує `image.tag` у свій Application. Коміту в Git немає. Це той самий `write-back-method: argocd`, що й для прода. Подробиці самого механізму — у [`ARGOCD_IMAGE_UPDATER.md`](./ARGOCD_IMAGE_UPDATER.md).
 5. Argo CD синхронізує чарт `charts/django-app` з `main` і накладає overlay. Под стартує з `migrate` проти своєї бази.
 
-У звичайному `pipelineJob` Jenkins Git кладе в `GIT_BRANCH` ім'я з префіксом репозиторію: `origin/main`, `origin/dev`, `origin/staging`. Пряме порівняння з `TRACKED_BRANCH=dev` ніколи не збіглося б. Jenkinsfile спочатку зрізає `origin/`, а також `refs/heads/`, `refs/remotes/` і `remotes/`, і лише тоді порівнює з `TRACKED_BRANCH`. Чужу гілку job не збирає.
+У звичайному `pipelineJob` Jenkins Git кладе в `GIT_BRANCH` ім'я з префіксом репозиторію: `origin/main`, `origin/dev`, `origin/staging`. Jenkinsfile зрізає `origin/` (також `refs/heads/`, `refs/remotes/` і `remotes/`) і з цієї назви вибирає тег. Окремі змінні job для гілки не використовуються: плагін EnvInject не встановлений, тож блок `environmentVariables` у seed їх не передає в пайплайн. Ім'я job додатково має збігатися з гілкою: `django-wagtail-ci-dev` збирає лише `dev`.
 
 Теги `dev-1`, `dev-2`, `dev-10` не є semver `X.Y.Z`. Без явної стратегії Image Updater сортує їх як рядки, і після дев'ятого білда `dev-9` виглядає новішим за `dev-10`. Тому в `django-app-dev-updater` і `django-app-staging-updater` стоїть `updateStrategy: newest-build`: вибирається образ, який останнім з'явився в ECR. Та сама стратегія вже була у прод-оновлювача.
 

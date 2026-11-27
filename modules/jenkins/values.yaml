@@ -67,10 +67,6 @@ controller:
                     text('''
                       pipelineJob("django-wagtail-ci") {
                         description("Build and push Django/Wagtail Docker image from main")
-                        environmentVariables {
-                          env("TRACKED_BRANCH", "main")
-                          env("IMAGE_TAG_PREFIX", "")
-                        }
                         triggers {
                           githubPush()
                         }
@@ -92,10 +88,6 @@ controller:
                       }
                       pipelineJob("django-wagtail-ci-dev") {
                         description("Build and push Django/Wagtail Docker image from dev")
-                        environmentVariables {
-                          env("TRACKED_BRANCH", "dev")
-                          env("IMAGE_TAG_PREFIX", "dev")
-                        }
                         triggers {
                           githubPush()
                         }
@@ -117,10 +109,6 @@ controller:
                       }
                       pipelineJob("django-wagtail-ci-staging") {
                         description("Build and push Django/Wagtail Docker image from staging")
-                        environmentVariables {
-                          env("TRACKED_BRANCH", "staging")
-                          env("IMAGE_TAG_PREFIX", "staging")
-                        }
                         triggers {
                           githubPush()
                         }
