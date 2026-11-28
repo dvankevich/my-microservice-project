@@ -179,6 +179,7 @@ spec:
               --snapshot-mode=redo \
               --use-new-run \
               --compressed-caching=false
+              --log-format=text
           '''
         }
       }
