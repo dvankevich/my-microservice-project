@@ -30,6 +30,20 @@ spec:
         limits:
           cpu: "300m"
           memory: "256Mi"
+    - name: sast
+      image: python:3.13-slim-trixie
+      imagePullPolicy: IfNotPresent
+      command:
+        - sleep
+      args:
+        - 99d
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "768Mi"
     - name: kaniko
       image: gcr.io/kaniko-project/executor:v1.23.2-debug
       imagePullPolicy: IfNotPresent
@@ -63,8 +77,6 @@ spec:
             .replaceFirst(/^origin\//, '')
             .replaceFirst(/~\d+$/, '')
 
-          // Job DSL environmentVariables are not injected: the EnvInject plugin is not installed.
-          // The checked-out branch is the source of truth. Jenkins passes it as origin/<name>.
           def tagPrefix
           if (normalizedBranch == 'main') {
             tagPrefix = ''
@@ -105,9 +117,40 @@ spec:
           echo "Target ECR Repository: ${env.ECR_REPO_URL}"
           echo "Tracked branch: ${normalizedBranch}"
           echo "Image tag: ${imageTag}"
-          if (env.PUSH_LATEST == 'true') {
-            echo "Also pushing tag: latest"
-          }
+        }
+      }
+    }
+
+    stage('SAST (Bandit & Semgrep)') {
+      when {
+        expression { currentBuild.result != 'NOT_BUILT' }
+      }
+      steps {
+        container('sast') {
+          sh '''
+            set -eu
+            pip install --quiet --no-cache-dir bandit semgrep
+
+            echo "=== Running Bandit (Python AST security check) ==="
+            bandit -r Django/ -c Django/pyproject.toml -f json -o bandit-report.json || true
+            bandit -r Django/ -c Django/pyproject.toml --severity-level medium --confidence-level medium
+
+            echo "=== Running Semgrep (Django / Wagtail / Dockerfile rules) ==="
+            semgrep scan \
+              --config p/python \
+              --config p/django \
+              --config p/dockerfile \
+              --exclude "Django/mysite/settings/dev.py" \
+              --severity ERROR \
+              --error \
+              --json-output=semgrep-report.json \
+              Django/
+          '''
+        }
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'bandit-report.json,semgrep-report.json', allowEmptyArchive: true
         }
       }
     }

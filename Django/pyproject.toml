@@ -1,0 +1,11 @@
+[tool.bandit]
+exclude_dirs = [
+    "venv",
+    ".venv",
+    "*/migrations/*",
+    "mysite/settings/dev.py",
+]
+tests = []
+skips = [
+    "B101", # assert_used (дозволяємо assert у тестах)
+]
