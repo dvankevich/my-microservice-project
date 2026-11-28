@@ -85,3 +85,48 @@ resource "aws_eks_node_group" "general" {
     ignore_changes = [scaling_config[0].desired_size]
   }
 }
+
+# Окрема група для production-подів Django.
+# Taint не пускає сюди dev, staging, Jenkins, Argo CD, Ingress і моніторинг.
+# Node group отримує тег Cluster Autoscaler автоматично, окрема IAM-політика не потрібна.
+resource "aws_eks_node_group" "prod" {
+  cluster_name    = aws_eks_cluster.eks.name
+  node_group_name = "prod"
+  node_role_arn   = aws_iam_role.nodes.arn
+  subnet_ids      = var.subnet_ids
+
+  capacity_type  = "ON_DEMAND"
+  instance_types = [var.instance_type]
+
+  # min 2 тримає базові репліки на різних хостах.
+  # max 4 вміщує HPA до 6 реплік і surge під час викату.
+  scaling_config {
+    desired_size = 2
+    max_size     = 4
+    min_size     = 2
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = {
+    role = "production"
+  }
+
+  taint {
+    key    = "dedicated"
+    value  = "production"
+    effect = "NO_SCHEDULE"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.amazon_eks_worker_node_policy,
+    aws_iam_role_policy_attachment.amazon_eks_cni_policy,
+    aws_iam_role_policy_attachment.amazon_ec2_container_registry_read_only,
+  ]
+
+  lifecycle {
+    ignore_changes = [scaling_config[0].desired_size]
+  }
+}
