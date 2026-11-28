@@ -2,7 +2,7 @@
 
 This repository contains Terraform configurations, Helm charts, and the Django/Wagtail application source code to provision and operate a complete cloud-native platform on AWS (`eu-central-1`):
 
-- **Core AWS Infrastructure**: Remote S3 Terraform state with native S3 locking, a multi-AZ VPC, a private Amazon ECR registry, an Amazon EKS cluster (`5 x t3.small` worker nodes across 3 Availability Zones), and a reusable Amazon RDS / Aurora PostgreSQL module isolated in private subnets.
+- **Core AWS Infrastructure**: Remote S3 Terraform state with native S3 locking, a multi-AZ VPC, a private Amazon ECR registry, an Amazon EKS cluster (`t3.small`: node group `general` min 3 / max 9, and a tainted `prod` group min 2 / max 4 for production Django only), and a reusable Amazon RDS / Aurora PostgreSQL module isolated in private subnets.
 - **Cluster Add-ons & Storage**: Multi-AZ `ingress-nginx` controller, `cert-manager` with a production Let's Encrypt `ClusterIssuer`, and a cluster-scoped encrypted `ebs-gp3` `StorageClass`.
 - **GitOps CI/CD Pipeline**: A declarative Jenkins CI server using Kaniko and IRSA for passwordless ECR builds, paired with Argo CD and **Argo CD Image Updater** for automated, commit-free GitOps continuous delivery.
 - **Observability Stack**: A lightweight Prometheus and **Grafana** monitoring module (`prometheus-server`, `kube-state-metrics`, `prometheus-node-exporter`, and Grafana over HTTPS at `https://grafana.dvankevich.pp.ua`, backed by persistent `ebs-gp3` volumes) tuned for `t3.small` resource limits.
@@ -71,7 +71,7 @@ my-microservice-project/
 │   ├── eks/
 │   │   ├── ebs-csi.tf                # OIDC provider, IAM role, and AWS EBS CSI driver add-on
 │   │   ├── eks.tf                    # EKS cluster, cluster IAM role, and access configuration
-│   │   ├── node.tf                   # Managed node group and node IAM role
+│   │   ├── node.tf                   # Managed node groups (general, prod) and node IAM role
 │   │   ├── outputs.tf                # Exports cluster endpoint, name, node role ARN, and OIDC provider outputs
 │   │   └── variables.tf
 │   ├── jenkins/
@@ -175,9 +175,9 @@ Provisions a private Amazon ECR repository for container images:
 Provisions a managed Amazon EKS cluster in `eu-central-1` running on the public subnets created by the `vpc` module:
 
 - **Cluster & IAM Role (`eks.tf`)**: Creates an IAM role for the EKS control plane with `AmazonEKSClusterPolicy` attached, then creates the `aws_eks_cluster` resource (`eks-cluster-demo`). The cluster is configured with both public and private API endpoint access and uses `authentication_mode = "API"` together with `bootstrap_cluster_creator_admin_permissions = true`.
-- **Managed Node Group (`node.tf`)**: Creates a managed node group (`general`) using `t3.small` instances (`desired_size = 5`, `min_size = 5`, `max_size = 6`).
-  - **Why `5 x t3.small` nodes:** In AWS EKS, the VPC CNI plugin restricts `t3.small` instances (2 GiB RAM) to **11 pods per node** due to ENI IP address limits. Running 5 `t3.small` nodes (55 pod slots total) provides sufficient capacity and memory headroom for system add-ons (`coredns`, `aws-node`, `kube-proxy`, `ebs-csi`), Multi-AZ `ingress-nginx`, `cert-manager`, `metrics-server`, horizontally scaled Django pods (up to 6 replicas via HPA), Argo CD + Image Updater, the Jenkins controller with dynamic Kaniko agent pods, and the Prometheus + Grafana observability stack without `Too many pods` or memory scheduling bottlenecks.
-  - **Autoscaler Lifecycle Rule:** `node.tf` includes `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` to prevent Terraform from conflicting with cluster autoscalers. When changing `desired_size` on an existing cluster, update it via AWS CLI (`aws eks update-nodegroup-config`).
+- **Managed Node Groups (`node.tf`)**: Two `t3.small` groups share the node IAM role and the public subnets. `general` (`main.tf`: `desired_size = 4`, `min_size = 3`, `max_size = 9`, label `role=general`, no taint) runs system add-ons, Ingress, cert-manager, Jenkins, Argo CD, monitoring, and the dev/staging apps. `prod` (`desired_size = 2`, `min_size = 2`, `max_size = 4`, label `role=production`, taint `dedicated=production:NoSchedule`) runs only the production Django pods. DaemonSets that tolerate every taint (`kube-proxy`, `aws-node`, `ebs-csi-node`, `prometheus-node-exporter`) still run on `prod` nodes; without them the node has no network.
+  - **Pod density:** The VPC CNI plugin restricts each `t3.small` (2 GiB RAM) to **11 pods**. Production requests are 100m CPU / 200Mi, so two or three Django pods fit on one `prod` node next to those DaemonSets. `max_size = 4` leaves room for the HPA ceiling of 6 replicas plus a rolling-update surge.
+  - **Autoscaler Lifecycle Rule:** Both groups set `lifecycle { ignore_changes = [scaling_config[0].desired_size] }` so Terraform does not fight Cluster Autoscaler. Change `desired_size` later with `aws eks update-nodegroup-config`. The managed group is tagged `k8s.io/cluster-autoscaler/eks-cluster-demo=owned`, so the existing autoscaler IAM policy covers `prod` without a new role. `balance-similar-node-groups` does not mix the groups: their labels and taints differ.
 - **EBS CSI Driver & IRSA (`ebs-csi.tf` & `outputs.tf`)**: Provisions an IAM OIDC identity provider for the cluster, creates a dedicated IAM role with `AmazonEBSCSIDriverPolicy` bound to `kube-system:ebs-csi-controller-sa`, installs the `aws-ebs-csi-driver` EKS add-on, and exports `oidc_provider_arn` and `oidc_provider_url` for downstream IRSA roles.
 - **IAM Permissions:** The node IAM role is attached with `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly`.
 
@@ -491,11 +491,19 @@ topologySpreadConstraints:
     labelSelector:
       matchLabels:
         app: {{ .Release.Name }}-django
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app: {{ .Release.Name }}-django
 ```
 
-- **`maxSkew: 1`:** Limits the difference in Django pod counts between any two worker nodes to at most `1`.
-- **`topologyKey: kubernetes.io/hostname`:** Spreads pods evenly across distinct EKS worker nodes. Because the node group spans multiple public subnets (`eu-central-1a`, `eu-central-1b`, `eu-central-1c`), this also provides Multi-AZ resilience.
+- **`maxSkew: 1`:** Limits the difference in Django pod counts between any two worker nodes, and between any two Availability Zones, to at most `1`.
+- **`topologyKey: kubernetes.io/hostname`:** Spreads pods across distinct EKS worker nodes. One node group over three subnets does not guarantee a node in each AZ, so the zone key is a separate soft preference.
 - **`whenUnsatisfiable: ScheduleAnyway`:** Applies a soft scheduling constraint so pods are evenly balanced during normal operation and self-healing, while still allowing replicas to run on a surviving node if another node becomes unavailable.
+
+Production (`values.yaml`) also sets `nodePlacement.enabled: true`: `nodeSelector` `role=production` and a toleration for `dedicated=production:NoSchedule`. The taint keeps every other workload off those nodes. The selector keeps production off `general`. Dev and staging set `nodePlacement.enabled: false`. Apply the `prod` node group and wait until its nodes are `Ready` before this chart revision is on `main`. If Argo syncs the selector first, production pods stay `Pending`.
 
 Verify that Django and Ingress replicas are scheduled across distinct nodes and Availability Zones:
 

@@ -42,7 +42,7 @@ flowchart TB
                 AppELB["AWS LoadBalancer (L4 Direct)<br/>django-app-django (Port 80)"]
 
                 %% EKS Cluster
-                subgraph EKS ["Amazon EKS Cluster: eks-cluster-demo (4x t3.small Worker Nodes across 3 AZs, min: 4 / max: 5)"]
+                subgraph EKS ["Amazon EKS Cluster: eks-cluster-demo (t3.small; general min 3/max 9, prod min 2/max 4)"]
                     direction TB
 
                     subgraph NS_Sys ["Namespace: kube-system & Cluster Storage"]
@@ -59,7 +59,7 @@ flowchart TB
                         DjangoIng["Ingress: django-app.dvankevich.pp.ua<br/>TLS Secret: django-app-tls"]
                         DjangoSvc["Service: django-app-django<br/>(LoadBalancer / ClusterIP :80 -> :8000)"]
                         HPA["HorizontalPodAutoscaler<br/>2–6 Replicas (CPU > 70%)"]
-                        DjangoPods["Deployment: django-app-django<br/>(2+ Replicas, Node Spread)<br/>InitContainer: wait-for-postgres"]
+                        DjangoPods["Deployment: django-app-django<br/>(prod nodes role=production)<br/>InitContainer: wait-for-postgres"]
                         CfgSec["ConfigMap (django-app-config)<br/>Secret (django-app-secret)"]
                     end
 
@@ -178,13 +178,13 @@ flowchart TB
 
 ### 2. Network Isolation (VPC `10.0.0.0/16`)
 
-* **Public Subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`):** Host the AWS LoadBalancers, shared NAT Gateway, and EKS worker nodes (`4 x t3.small`, auto-scaling `4–5` nodes) distributed across three Availability Zones (`eu-central-1a`, `1b`, `1c`).
+* **Public Subnets (`10.0.1.0/24`, `10.0.2.0/24`, `10.0.3.0/24`):** Host the AWS LoadBalancers, shared NAT Gateway, and EKS worker nodes across three Availability Zones (`eu-central-1a`, `1b`, `1c`). Node group `general` (`t3.small`, min 3 / max 9, label `role=general`) runs platform and non-prod workloads. Node group `prod` (`t3.small`, min 2 / max 4, label `role=production`, taint `dedicated=production:NoSchedule`) runs production Django pods. DaemonSets that tolerate every taint still run on `prod`.
 * **Private Subnets (`10.0.4.0/24`, `10.0.5.0/24`, `10.0.6.0/24`):** Isolate the managed Amazon RDS PostgreSQL 16 database (`publicly_accessible = false`). Inbound TCP traffic on port `5432` is restricted exclusively to the VPC CIDR block (`10.0.0.0/16`) via `wagtail-db-sg`.
 
 ### 3. Traffic Routing, High Availability & TLS
 
 * **Shared L7 Ingress (`ingress-nginx` + `cert-manager`):** Routes HTTPS traffic for `django-app`, `django-app-dev`, `django-app-staging`, `jenkins`, and `argocd` subdomains through a single AWS LoadBalancer with automated TLS certificate issuance and renewal via Let's Encrypt (`letsencrypt-prod`). Dev and staging application Services are `ClusterIP`. Their ClusterIP stays until the Service object is recreated. Public DNS points at the shared ingress ELB, not at that ClusterIP.
-* **Workload Distribution (`topologySpreadConstraints`):** Both `ingress-nginx-controller` replicas (spread across Availability Zones) and `django-app-django` pods (spread across worker nodes) avoid single-node points of failure and scale dynamically via HPA (`2–6` replicas).
+* **Workload Distribution (`topologySpreadConstraints`):** `ingress-nginx-controller` replicas spread across Availability Zones. Production `django-app-django` pods schedule only onto node group `prod` and spread softly across hostnames and zones (`ScheduleAnyway`). They scale via HPA (`2–6` replicas). Dev and staging do not select those nodes.
 
 ### 4. Cluster Storage & Lightweight Observability (`module.monitoring`)
 

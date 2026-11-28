@@ -33,7 +33,7 @@ Shows every HTTP metrics endpoint Prometheus actively scrapes, grouped by `job` 
 | Job Name | Source | What It Collects |
 | :--- | :--- | :--- |
 | `kubernetes-apiservers` | EKS Control Plane (`https://10.0.x.x:443/metrics`) | API request latency, error rates, etcd/controller metrics |
-| `kubernetes-nodes` | Kubelet API proxy per EC2 node | Node-level kubelet health, pod counts, volume stats (`t3.small`, `eu-central-1a/b/c`, `role="general"`) |
+| `kubernetes-nodes` | Kubelet API proxy per EC2 node | Node-level kubelet health, pod counts, volume stats (`t3.small`, `eu-central-1a/b/c`, `role="general"` or `role="production"`) |
 | `kubernetes-nodes-cadvisor` | cAdvisor embedded in Kubelet | Container CPU, memory working set, filesystem, and network I/O for every pod |
 | `kubernetes-service-endpoints` | Services annotated with `prometheus.io/scrape: "true"` | `kube-state-metrics`, `prometheus-node-exporter`, and custom annotated services |
 | `kubernetes-pods` | Pods annotated with `prometheus.io/scrape: "true"` | Application-level metrics exposed directly by pods (e.g., Django `/metrics`) |

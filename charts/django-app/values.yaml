@@ -34,6 +34,18 @@ autoscaling:
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
 
+# Лише production. values-dev.yaml і values-staging.yaml вимикають це,
+# інакше їхні поди вимагатимуть ноди role=production.
+nodePlacement:
+  enabled: true
+  nodeSelector:
+    role: production
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: production
+      effect: NoSchedule
+
 # Анотації для подів (можна увімкнути для автоматичного збору метрик Prometheus)
 podAnnotations: {}
   # prometheus.io/scrape: "true"

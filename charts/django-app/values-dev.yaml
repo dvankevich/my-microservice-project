@@ -11,6 +11,9 @@ ingress:
 autoscaling:
   enabled: false
 
+nodePlacement:
+  enabled: false
+
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: "arn:aws:iam::250284066941:role/eks-cluster-demo-django-media-dev"
