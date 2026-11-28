@@ -1,0 +1,6 @@
+# EKS API endpoint залишається публічним для керування через kubectl без VPN
+AVD-AWS-0040
+AVD-AWS-0041
+
+# Вихідний трафік для RDS Security Group обмежений підмережами VPC
+AVD-AWS-0104

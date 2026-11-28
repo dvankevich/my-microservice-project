@@ -22,5 +22,6 @@ media:
   bucket: wagtail-media-lesson5-dev
 
 env:
+  DEBUG: "True"
   CSRF_TRUSTED_ORIGINS: "https://django-app-dev.dvankevich.pp.ua"
   POSTGRES_DB: wagtail_dev

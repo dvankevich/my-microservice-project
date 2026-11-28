@@ -1,0 +1,13 @@
+title = "Gitleaks configuration for my-microservice-project"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore example templates and non-production dummy keys"
+paths = [
+  '''^charts/django-app/secrets\.yaml\.example$''',
+  '''^modules/jenkins/secrets\.yaml\.example$''',
+  '''^Django/mysite/settings/dev\.py$''',
+  '''^Django/Dockerfile$''',
+]

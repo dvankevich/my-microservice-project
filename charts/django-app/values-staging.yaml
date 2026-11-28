@@ -22,5 +22,8 @@ media:
   bucket: wagtail-media-lesson5-staging
 
 env:
+  DEBUG: "False"
+  ALLOWED_HOSTS: "django-app-staging.dvankevich.pp.ua"
   CSRF_TRUSTED_ORIGINS: "https://django-app-staging.dvankevich.pp.ua"
   POSTGRES_DB: wagtail_staging
+

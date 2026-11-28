@@ -84,8 +84,8 @@ media:
 env:
   DJANGO_SETTINGS_MODULE: "mysite.settings.docker"
   PORT: "8000"
-  DEBUG: "True"
-  ALLOWED_HOSTS: "*"
+  DEBUG: "False"
+  ALLOWED_HOSTS: "django-app.dvankevich.pp.ua"
   CSRF_TRUSTED_ORIGINS: "https://django-app.dvankevich.pp.ua"
   POSTGRES_DB: "wagtail"
   POSTGRES_USER: "wagtail_user"
